@@ -81,6 +81,10 @@ if 'generated_resume' not in st.session_state:
     st.session_state.generated_resume = None
 if 'text_gen' not in st.session_state:
     st.session_state.text_gen = None
+if 'selected_job' not in st.session_state:
+    st.session_state.selected_job = None
+if 'show_resume_generator' not in st.session_state:
+    st.session_state.show_resume_generator = False
 
 class APIMEmbeddingGenerator:
     def __init__(self, api_key, endpoint):
@@ -466,8 +470,11 @@ def display_user_profile():
 
 def display_resume_generator():
     """Display the resume generator interface"""
-    if 'selected_job' not in st.session_state:
+    if st.session_state.selected_job is None:
         st.warning("No job selected. Please select a job first.")
+        if st.button("← Back to Jobs"):
+            st.session_state.show_resume_generator = False
+            st.rerun()
         return
     
     job = st.session_state.selected_job
