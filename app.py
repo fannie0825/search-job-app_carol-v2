@@ -824,7 +824,7 @@ def display_job_card(result, index):
                 </p>
             </div>
             <div class="match-score">
-                {score:.0%} Match
+                {score:.1%} Match
             </div>
         </div>
         <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem; color: var(--text-secondary);">
@@ -1761,7 +1761,8 @@ def main():
             with col1a:
                 num_results_auto = st.number_input("Results", 1, len(jobs), min(10, len(jobs)), key="auto_results")
             with col1b:
-                min_score_auto = st.slider("Min score", 0.0, 1.0, 0.0, 0.05, key="auto_min_score")
+                min_score_percent = st.slider("Min score (%)", 0, 100, 0, 5, key="auto_min_score")
+                min_score_auto = min_score_percent / 100.0
             
             match_button = st.button("🎯 Find Best Matches", type="primary", use_container_width=True, key="auto_match")
             
@@ -1811,7 +1812,8 @@ def main():
         with col2a:
             num_results = st.number_input("Results", 1, len(jobs), min(10, len(jobs)), key="manual_results")
         with col2b:
-            min_score = st.slider("Min score", 0.0, 1.0, 0.0, 0.05, key="manual_min_score")
+            min_score_percent = st.slider("Min score (%)", 0, 100, 0, 5, key="manual_min_score")
+            min_score = min_score_percent / 100.0
         
         search_button = st.button("🔍 Search", type="primary", use_container_width=True, key="manual_search_btn")
         
@@ -1841,9 +1843,9 @@ def main():
         # Show metrics
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Average Match", f"{np.mean([r['similarity_score'] for r in results]):.0%}")
+            st.metric("Average Match", f"{np.mean([r['similarity_score'] for r in results]):.1%}")
         with col2:
-            st.metric("Best Match", f"{results[0]['similarity_score']:.0%}")
+            st.metric("Best Match", f"{results[0]['similarity_score']:.1%}")
         with col3:
             st.metric("Total Jobs", len(results))
         
