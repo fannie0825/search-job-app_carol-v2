@@ -1,0 +1,29 @@
+{
+  "name": "careerlens",
+  "version": "1.0.0",
+  "description": "CareerLens - AI Career Copilot for Hong Kong",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "build:css": "tailwindcss -i ./globals.css -o ./dist/output.css --watch"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.0",
+    "postcss": "^8.4.32",
+    "autoprefixer": "^10.4.16"
+  },
+  "keywords": [
+    "career",
+    "job-search",
+    "ai",
+    "hong-kong"
+  ],
+  "author": "",
+  "license": "MIT"
+}
