@@ -10,7 +10,10 @@ from sklearn.metrics.pairwise import cosine_similarity
 import time
 from datetime import datetime
 import json
+import re
 from io import BytesIO
+import PyPDF2
+from docx import Document
 
 st.set_page_config(
     page_title="Semantic Job Search",
@@ -395,10 +398,177 @@ def display_job_card(result, index):
                 st.session_state.show_resume_generator = True
                 st.rerun()
 
+def extract_text_from_resume(uploaded_file):
+    """Extract text from uploaded resume file (PDF, DOCX, or TXT)"""
+    try:
+        file_type = uploaded_file.name.split('.')[-1].lower()
+        
+        if file_type == 'pdf':
+            # Extract text from PDF
+            uploaded_file.seek(0)  # Reset file pointer
+            pdf_reader = PyPDF2.PdfReader(uploaded_file)
+            text = ""
+            for page in pdf_reader.pages:
+                text += page.extract_text() + "\n"
+            return text
+        
+        elif file_type in ['docx', 'doc']:
+            # Extract text from DOCX
+            uploaded_file.seek(0)  # Reset file pointer
+            doc = Document(uploaded_file)
+            text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+            return text
+        
+        elif file_type == 'txt':
+            # Read text file
+            uploaded_file.seek(0)  # Reset file pointer
+            text = str(uploaded_file.read(), "utf-8")
+            return text
+        
+        else:
+            st.error(f"Unsupported file type: {file_type}. Please upload PDF, DOCX, or TXT.")
+            return None
+            
+    except Exception as e:
+        st.error(f"Error extracting text from resume: {e}")
+        return None
+
+def extract_profile_from_resume(resume_text):
+    """Use Azure OpenAI to extract structured profile information from resume text"""
+    try:
+        text_gen = get_text_generator()
+        
+        prompt = f"""You are an expert at parsing resumes. Extract structured information from the following resume text.
+
+RESUME TEXT:
+{resume_text}
+
+Please extract and return the following information in JSON format:
+{{
+    "name": "Full name",
+    "email": "Email address",
+    "phone": "Phone number",
+    "location": "City, State/Country",
+    "linkedin": "LinkedIn URL if mentioned",
+    "portfolio": "Portfolio/website URL if mentioned",
+    "summary": "Professional summary or objective (2-3 sentences)",
+    "experience": "Work experience in chronological order with job titles, companies, dates, and key achievements (formatted as bullet points)",
+    "education": "Education details including degrees, institutions, and graduation dates",
+    "skills": "Comma-separated list of technical and soft skills",
+    "certifications": "Professional certifications, awards, publications, or other achievements"
+}}
+
+Important:
+- If information is not found, use "N/A" or empty string
+- Format experience with clear job titles, companies, dates, and bullet points for achievements
+- Extract all relevant skills mentioned
+- Keep the summary concise but informative
+- Return ONLY valid JSON, no additional text or markdown"""
+        
+        payload = {
+            "messages": [
+                {"role": "system", "content": "You are a resume parser. Extract structured information and return only valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 2000,
+            "temperature": 0.3
+        }
+        
+        response = requests.post(
+            text_gen.url,
+            headers=text_gen.headers,
+            json=payload,
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            content = result['choices'][0]['message']['content']
+            
+            # Try to extract JSON from the response
+            # Sometimes the model returns JSON wrapped in markdown code blocks
+            content = content.strip()
+            if content.startswith("```"):
+                # Remove markdown code blocks
+                lines = content.split('\n')
+                content = '\n'.join(lines[1:-1]) if lines[-1].startswith('```') else '\n'.join(lines[1:])
+            
+            try:
+                profile_data = json.loads(content)
+                return profile_data
+            except json.JSONDecodeError:
+                # Try to find JSON in the response
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    profile_data = json.loads(json_match.group())
+                    return profile_data
+                else:
+                    st.error("Could not parse extracted profile data. Please try again.")
+                    return None
+        else:
+            st.error(f"API Error: {response.status_code} - {response.text}")
+            return None
+            
+    except Exception as e:
+        st.error(f"Error extracting profile: {e}")
+        return None
+
 def display_user_profile():
     """Display and edit user profile"""
     st.header("👤 Your Profile")
     st.caption("Fill in your information to generate tailored resumes")
+    
+    # Resume upload section
+    st.markdown("---")
+    st.subheader("📄 Upload Your Resume (Optional)")
+    st.caption("Upload your resume to automatically extract your information")
+    
+    uploaded_file = st.file_uploader(
+        "Choose a resume file",
+        type=['pdf', 'docx', 'doc', 'txt'],
+        help="Supported formats: PDF, DOCX, TXT"
+    )
+    
+    if uploaded_file is not None:
+        if st.button("🔍 Extract Information from Resume", type="primary", use_container_width=True):
+            with st.spinner("📖 Reading resume and extracting information..."):
+                # Extract text from resume
+                resume_text = extract_text_from_resume(uploaded_file)
+                
+                if resume_text:
+                    st.success(f"✅ Extracted {len(resume_text)} characters from resume")
+                    
+                    # Show extracted text preview
+                    with st.expander("📝 Preview Extracted Text"):
+                        st.text(resume_text[:1000] + "..." if len(resume_text) > 1000 else resume_text)
+                    
+                    # Extract structured information
+                    with st.spinner("🤖 Using AI to extract structured information..."):
+                        profile_data = extract_profile_from_resume(resume_text)
+                        
+                        if profile_data:
+                            # Update session state with extracted data
+                            st.session_state.user_profile = {
+                                'name': profile_data.get('name', ''),
+                                'email': profile_data.get('email', ''),
+                                'phone': profile_data.get('phone', ''),
+                                'location': profile_data.get('location', ''),
+                                'linkedin': profile_data.get('linkedin', ''),
+                                'portfolio': profile_data.get('portfolio', ''),
+                                'summary': profile_data.get('summary', ''),
+                                'experience': profile_data.get('experience', ''),
+                                'education': profile_data.get('education', ''),
+                                'skills': profile_data.get('skills', ''),
+                                'certifications': profile_data.get('certifications', '')
+                            }
+                            st.success("✅ Profile information extracted successfully! Review and edit below.")
+                            st.balloons()
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ Could not extract structured information. Please fill in manually.")
+    
+    st.markdown("---")
     
     with st.form("user_profile_form"):
         col1, col2 = st.columns(2)

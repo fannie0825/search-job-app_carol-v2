@@ -2,3 +2,5 @@ streamlit
 requests
 numpy
 scikit-learn
+PyPDF2
+python-docx
