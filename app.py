@@ -16,10 +16,10 @@ import PyPDF2
 from docx import Document
 
 st.set_page_config(
-    page_title="Semantic Job Search",
-    page_icon="🔍",
+    page_title="Executive Dashboard - Job Search",
+    page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 st.markdown("""
@@ -383,6 +383,151 @@ st.markdown("""
         border-bottom: 2px solid var(--primary-accent) !important;
         outline: none !important;
     }
+    
+    /* Executive Dashboard Styles */
+    .dashboard-header {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: var(--primary-accent);
+        margin-bottom: 0.5rem;
+        letter-spacing: -0.02em;
+    }
+    
+    .dashboard-subtitle {
+        font-size: 1rem;
+        color: var(--text-secondary);
+        margin-bottom: 2rem;
+    }
+    
+    .metric-card {
+        background-color: var(--bg-container);
+        padding: 1.5rem;
+        border-radius: 12px;
+        border: 1px solid rgba(0, 0, 0, 0.05);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    }
+    
+    .metric-value {
+        font-size: 2rem;
+        font-weight: bold;
+        color: var(--primary-accent);
+        margin: 0.5rem 0;
+    }
+    
+    .metric-label {
+        font-size: 0.9rem;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    
+    .job-table-row {
+        cursor: pointer;
+        transition: background-color 0.2s ease;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+    }
+    
+    .job-table-row:hover {
+        background-color: var(--bg-container);
+    }
+    
+    .match-score-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.4rem 0.8rem;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+    
+    .match-score-high {
+        background-color: #4CAF50;
+        color: white;
+    }
+    
+    .match-score-medium {
+        background-color: #FFC107;
+        color: #333;
+    }
+    
+    .match-score-low {
+        background-color: #FF9800;
+        color: white;
+    }
+    
+    .expandable-details {
+        background-color: var(--bg-container);
+        padding: 1.5rem;
+        border-radius: 8px;
+        margin-top: 1rem;
+        border-left: 4px solid var(--primary-accent);
+    }
+    
+    .match-breakdown {
+        display: flex;
+        gap: 2rem;
+        margin: 1rem 0;
+    }
+    
+    .match-type {
+        flex: 1;
+        padding: 1rem;
+        background-color: var(--bg-main);
+        border-radius: 8px;
+    }
+    
+    .match-type-label {
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        margin-bottom: 0.5rem;
+    }
+    
+    .match-type-value {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: var(--primary-accent);
+    }
+    
+    /* Sidebar styling */
+    .sidebar-section {
+        margin-bottom: 2rem;
+        padding-bottom: 1.5rem;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    }
+    
+    [data-theme="dark"] .sidebar-section {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    /* Table styling */
+    .dataframe {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    
+    .dataframe th {
+        background-color: var(--bg-container);
+        color: var(--text-primary);
+        font-weight: 600;
+        padding: 1rem;
+        text-align: left;
+        border-bottom: 2px solid var(--primary-accent);
+    }
+    
+    .dataframe td {
+        padding: 1rem;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+    }
+    
+    [data-theme="dark"] .dataframe td {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -414,6 +559,14 @@ if 'show_profile_editor' not in st.session_state:
     st.session_state.show_profile_editor = False
 if 'use_auto_match' not in st.session_state:
     st.session_state.use_auto_match = False
+if 'expanded_job_index' not in st.session_state:
+    st.session_state.expanded_job_index = None
+if 'industry_filter' not in st.session_state:
+    st.session_state.industry_filter = None
+if 'salary_min' not in st.session_state:
+    st.session_state.salary_min = None
+if 'salary_max' not in st.session_state:
+    st.session_state.salary_max = None
 
 class APIMEmbeddingGenerator:
     def __init__(self, api_key, endpoint):
@@ -785,6 +938,32 @@ class SemanticJobSearch:
             })
         
         return results
+    
+    def calculate_skill_match(self, user_skills, job_skills):
+        """Calculate skill-based match score"""
+        if not user_skills or not job_skills:
+            return 0.0, []
+        
+        # Normalize skills to lowercase for comparison
+        user_skills_lower = [s.lower().strip() for s in str(user_skills).split(',') if s.strip()]
+        job_skills_lower = [s.lower().strip() for s in job_skills if isinstance(s, str) and s.strip()]
+        
+        if not user_skills_lower or not job_skills_lower:
+            return 0.0, []
+        
+        # Find matching skills
+        matched_skills = []
+        for job_skill in job_skills_lower:
+            for user_skill in user_skills_lower:
+                if job_skill in user_skill or user_skill in job_skill:
+                    matched_skills.append(job_skill)
+                    break
+        
+        # Calculate match percentage
+        match_score = len(matched_skills) / len(job_skills_lower) if job_skills_lower else 0.0
+        missing_skills = [s for s in job_skills_lower if s not in matched_skills]
+        
+        return min(match_score, 1.0), missing_skills[:5]  # Cap at 1.0 and limit missing skills
 
 def get_embedding_generator():
     if st.session_state.embedding_gen is None:
