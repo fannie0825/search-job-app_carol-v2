@@ -412,7 +412,7 @@ def extract_text_from_resume(uploaded_file):
                 text += page.extract_text() + "\n"
             return text
         
-        elif file_type in ['docx', 'doc']:
+        elif file_type == 'docx':
             # Extract text from DOCX
             uploaded_file.seek(0)  # Reset file pointer
             doc = Document(uploaded_file)
@@ -525,7 +525,7 @@ def display_user_profile():
     
     uploaded_file = st.file_uploader(
         "Choose a resume file",
-        type=['pdf', 'docx', 'doc', 'txt'],
+        type=['pdf', 'docx', 'txt'],
         help="Supported formats: PDF, DOCX, TXT"
     )
     
