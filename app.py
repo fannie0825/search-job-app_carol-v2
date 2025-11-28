@@ -146,10 +146,15 @@ class APIMEmbeddingGenerator:
 class AzureOpenAITextGenerator:
     def __init__(self, api_key, endpoint):
         self.api_key = api_key
+        # Normalize endpoint: remove trailing slash
+        endpoint = endpoint.rstrip('/')
+        # Remove /openai if it's already in the endpoint (to avoid duplication)
+        if endpoint.endswith('/openai'):
+            endpoint = endpoint[:-7]  # Remove '/openai'
         self.endpoint = endpoint
         self.deployment = "gpt-4o-mini"  # or your deployment name
         self.api_version = "2024-02-01"
-        self.url = f"{endpoint}/openai/deployments/{self.deployment}/chat/completions?api-version={self.api_version}"
+        self.url = f"{self.endpoint}/openai/deployments/{self.deployment}/chat/completions?api-version={self.api_version}"
         self.headers = {"api-key": self.api_key, "Content-Type": "application/json"}
     
     def generate_resume(self, user_profile, job_posting):
