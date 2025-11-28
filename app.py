@@ -47,8 +47,22 @@ st.markdown("""
         --success-green: #66BB6A;
     }
     
-    /* Override Streamlit dark mode */
-    .stApp[data-theme="dark"] {
+    /* Override Streamlit dark mode - multiple selectors for compatibility */
+    .stApp[data-theme="dark"],
+    [data-theme="dark"] .stApp,
+    .stApp[data-theme="dark"] :root {
+        --primary-accent: #4DD0E1;
+        --action-accent: #FF9800;
+        --bg-main: #1E2124;
+        --bg-container: #282C31;
+        --text-primary: #E0E0E0;
+        --text-secondary: #B0B0B0;
+        --success-green: #66BB6A;
+    }
+    
+    /* Ensure CSS variables work in all contexts */
+    html[data-theme="dark"],
+    html[data-theme="dark"] :root {
         --primary-accent: #4DD0E1;
         --action-accent: #FF9800;
         --bg-main: #1E2124;
@@ -189,25 +203,34 @@ st.markdown("""
     }
     
     /* Sliders - Action Accent Fill */
-    /* Target Streamlit slider track fill */
-    .stSlider [data-baseweb="slider"] > div:first-child {
+    /* Target Streamlit slider track fill - multiple approaches for compatibility */
+    .stSlider [data-baseweb="slider"] > div:first-child,
+    .stSlider [data-baseweb="slider"] > div > div {
         background-color: var(--action-accent) !important;
     }
     
     /* Target slider track background */
-    .stSlider [data-baseweb="slider-track"] {
+    .stSlider [data-baseweb="slider-track"],
+    .stSlider [data-baseweb="slider"] [role="slider"] {
         background-color: var(--action-accent) !important;
     }
     
     /* Alternative selector for slider fill */
-    .stSlider div[style*="background-color"] {
+    .stSlider div[style*="background-color"],
+    .stSlider div[style*="background:"] {
         background-color: var(--action-accent) !important;
     }
     
     /* Target slider thumb/handle */
-    .stSlider [data-baseweb="slider-thumb"] {
+    .stSlider [data-baseweb="slider-thumb"],
+    .stSlider [role="slider"] {
         background-color: var(--action-accent) !important;
         border-color: var(--action-accent) !important;
+    }
+    
+    /* Slider value display */
+    .stSlider label {
+        color: var(--text-primary) !important;
     }
     
     /* Status Indicators - Profile Ready */
@@ -249,6 +272,17 @@ st.markdown("""
         margin: 1rem 0;
     }
     
+    /* Alternative: Style columns directly for Step 3 */
+    div[data-testid="column"]:has(.step3-container) {
+        padding: 0.5rem;
+    }
+    
+    /* Ensure container background shows through */
+    .step3-container > * {
+        position: relative;
+        z-index: 1;
+    }
+    
     /* Minimal Dividers */
     hr {
         border: none;
@@ -272,6 +306,69 @@ st.markdown("""
         padding: 1.5rem;
         border-radius: 12px;
         margin-bottom: 1rem;
+    }
+    
+    /* Ensure proper spacing and layout */
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    
+    /* Improve form styling */
+    .stForm {
+        border: none;
+        background-color: transparent;
+    }
+    
+    /* File uploader styling */
+    .stFileUploader > div {
+        border: 1px dashed rgba(0, 0, 0, 0.2);
+        border-radius: 8px;
+        padding: 1rem;
+        background-color: var(--bg-container);
+    }
+    
+    [data-theme="dark"] .stFileUploader > div {
+        border-color: rgba(255, 255, 255, 0.2);
+    }
+    
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        color: var(--text-primary);
+        font-weight: 500;
+    }
+    
+    /* Metric styling */
+    [data-testid="stMetricValue"] {
+        color: var(--text-primary);
+    }
+    
+    [data-testid="stMetricLabel"] {
+        color: var(--text-secondary);
+    }
+    
+    /* Info/Warning/Success boxes */
+    .stAlert {
+        border-radius: 8px;
+        border: none;
+    }
+    
+    /* Number input styling */
+    .stNumberInput > div > div > input {
+        border: none !important;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.1) !important;
+        border-radius: 0 !important;
+        background-color: transparent !important;
+    }
+    
+    [data-theme="dark"] .stNumberInput > div > div > input {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.2) !important;
+        color: var(--text-primary) !important;
+    }
+    
+    .stNumberInput > div > div > input:focus {
+        border-bottom: 2px solid var(--primary-accent) !important;
+        outline: none !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -1631,7 +1728,9 @@ def main():
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown('<div class="step3-container">', unsafe_allow_html=True)
+        st.markdown("""
+        <div class="step3-container">
+        """, unsafe_allow_html=True)
         st.subheader("🤖 Automatic Matching")
         if profile_complete:
             st.info("💡 We'll find the best matching jobs based on your profile!")
@@ -1673,7 +1772,9 @@ def main():
         st.markdown('</div>', unsafe_allow_html=True)
     
     with col2:
-        st.markdown('<div class="step3-container">', unsafe_allow_html=True)
+        st.markdown("""
+        <div class="step3-container">
+        """, unsafe_allow_html=True)
         st.subheader("🔍 Manual Search")
         st.info("💡 Describe your ideal job and we'll find matches!")
         
