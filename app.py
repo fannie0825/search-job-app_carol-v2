@@ -202,30 +202,43 @@ st.markdown("""
         transform: translateY(-1px) !important;
     }
     
-    /* Sliders - Action Accent Fill */
-    /* Target Streamlit slider track fill - multiple approaches for compatibility */
-    .stSlider [data-baseweb="slider"] > div:first-child,
+    /* Sliders - Elegant Design */
+    /* Slider track background - subtle gray */
+    .stSlider [data-baseweb="slider"] > div:first-child {
+        background-color: rgba(0, 0, 0, 0.08) !important;
+    }
+    
+    [data-theme="dark"] .stSlider [data-baseweb="slider"] > div:first-child {
+        background-color: rgba(255, 255, 255, 0.15) !important;
+    }
+    
+    /* Slider track fill - primary accent color */
     .stSlider [data-baseweb="slider"] > div > div {
-        background-color: var(--action-accent) !important;
+        background-color: var(--primary-accent) !important;
     }
     
     /* Target slider track background */
-    .stSlider [data-baseweb="slider-track"],
-    .stSlider [data-baseweb="slider"] [role="slider"] {
-        background-color: var(--action-accent) !important;
+    .stSlider [data-baseweb="slider-track"] {
+        background-color: rgba(0, 0, 0, 0.08) !important;
     }
     
-    /* Alternative selector for slider fill */
-    .stSlider div[style*="background-color"],
-    .stSlider div[style*="background:"] {
-        background-color: var(--action-accent) !important;
+    [data-theme="dark"] .stSlider [data-baseweb="slider-track"] {
+        background-color: rgba(255, 255, 255, 0.15) !important;
     }
     
-    /* Target slider thumb/handle */
+    /* Slider thumb/handle - primary accent with hover effect */
     .stSlider [data-baseweb="slider-thumb"],
     .stSlider [role="slider"] {
-        background-color: var(--action-accent) !important;
-        border-color: var(--action-accent) !important;
+        background-color: var(--primary-accent) !important;
+        border-color: var(--primary-accent) !important;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1) !important;
+        transition: transform 0.2s ease, box-shadow 0.2s ease !important;
+    }
+    
+    .stSlider [data-baseweb="slider-thumb"]:hover,
+    .stSlider [role="slider"]:hover {
+        transform: scale(1.1) !important;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15) !important;
     }
     
     /* Slider value display */
@@ -811,7 +824,7 @@ def display_job_card(result, index):
                 </p>
             </div>
             <div class="match-score">
-                {score:.1%} Match
+                {score:.0%} Match
             </div>
         </div>
         <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem; color: var(--text-secondary);">
@@ -1664,7 +1677,16 @@ def main():
     with col2:
         location = st.text_input("📍 Location", value="Hong Kong", key="main_location")
     with col3:
-        country = st.selectbox("🌍 Country", ["hk", "us", "uk", "sg", "au", "ca"], key="main_country")
+        country_options = {
+            "Hong Kong": "hk",
+            "United States": "us",
+            "United Kingdom": "uk",
+            "Singapore": "sg",
+            "Australia": "au",
+            "Canada": "ca"
+        }
+        country_display = st.selectbox("🌍 Country", list(country_options.keys()), key="main_country")
+        country = country_options[country_display]
     with col4:
         job_type = st.selectbox("⏰ Type", ["fulltime", "parttime", "contract", "temporary", "internship"], key="main_job_type")
     
@@ -1819,9 +1841,9 @@ def main():
         # Show metrics
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Average Match", f"{np.mean([r['similarity_score'] for r in results]):.1%}")
+            st.metric("Average Match", f"{np.mean([r['similarity_score'] for r in results]):.0%}")
         with col2:
-            st.metric("Best Match", f"{results[0]['similarity_score']:.1%}")
+            st.metric("Best Match", f"{results[0]['similarity_score']:.0%}")
         with col3:
             st.metric("Total Jobs", len(results))
         
