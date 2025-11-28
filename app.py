@@ -869,7 +869,8 @@ def main():
                     resume_query = st.session_state.resume_text
                     # If we have structured profile, enhance the query
                     if st.session_state.user_profile.get('summary'):
-                        resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
+                        profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
+                        resume_query = f"{resume_query} {profile_data}"
                 else:
                     # Use profile data to create query
                     resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
