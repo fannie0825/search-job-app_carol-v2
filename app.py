@@ -92,6 +92,10 @@ if 'resume_text' not in st.session_state:
     st.session_state.resume_text = None
 if 'matched_jobs' not in st.session_state:
     st.session_state.matched_jobs = []
+if 'match_score' not in st.session_state:
+    st.session_state.match_score = None
+if 'missing_keywords' not in st.session_state:
+    st.session_state.missing_keywords = None
 
 class APIMEmbeddingGenerator:
     def __init__(self, api_key, endpoint):
@@ -161,57 +165,191 @@ class AzureOpenAITextGenerator:
         self.url = f"{self.endpoint}/openai/deployments/{self.deployment}/chat/completions?api-version={self.api_version}"
         self.headers = {"api-key": self.api_key, "Content-Type": "application/json"}
     
-    def generate_resume(self, user_profile, job_posting):
-        """Generate a tailored resume based on user profile and job posting"""
-        prompt = f"""You are an expert resume writer. Create a professional, ATS-friendly resume tailored to the specific job posting.
+    def generate_resume(self, user_profile, job_posting, raw_resume_text=None):
+        """Generate a tailored resume based on user profile and job posting using Context Sandwich approach.
+        Returns structured JSON data instead of formatted text."""
+        
+        # System Instructions
+        system_instructions = """You are an expert resume writer with expertise in ATS optimization and career coaching.
+Your task is to create a tailored resume by analyzing the job description and adapting the user's profile.
+Return ONLY valid JSON - no markdown, no additional text, no code blocks."""
 
-USER BACKGROUND:
-- Name: {user_profile.get('name', 'N/A')}
-- Email: {user_profile.get('email', 'N/A')}
-- Phone: {user_profile.get('phone', 'N/A')}
-- Location: {user_profile.get('location', 'N/A')}
-- Summary: {user_profile.get('summary', 'N/A')}
-- Experience: {user_profile.get('experience', 'N/A')}
-- Education: {user_profile.get('education', 'N/A')}
-- Skills: {user_profile.get('skills', 'N/A')}
-- Certifications: {user_profile.get('certifications', 'N/A')}
+        # Job Description Section
+        job_description = f"""JOB POSTING TO MATCH:
+Title: {job_posting.get('title', 'N/A')}
+Company: {job_posting.get('company', 'N/A')}
+Description: {job_posting.get('description', 'N/A')}
+Required Skills: {', '.join(job_posting.get('skills', []))}"""
 
-JOB POSTING:
-- Title: {job_posting.get('title', 'N/A')}
-- Company: {job_posting.get('company', 'N/A')}
-- Description: {job_posting.get('description', 'N/A')}
-- Required Skills: {', '.join(job_posting.get('skills', []))}
+        # Structured Profile Section
+        structured_profile = f"""STRUCTURED PROFILE:
+Name: {user_profile.get('name', 'N/A')}
+Email: {user_profile.get('email', 'N/A')}
+Phone: {user_profile.get('phone', 'N/A')}
+Location: {user_profile.get('location', 'N/A')}
+LinkedIn: {user_profile.get('linkedin', 'N/A')}
+Portfolio: {user_profile.get('portfolio', 'N/A')}
+Summary: {user_profile.get('summary', 'N/A')}
+Experience: {user_profile.get('experience', 'N/A')}
+Education: {user_profile.get('education', 'N/A')}
+Skills: {user_profile.get('skills', 'N/A')}
+Certifications: {user_profile.get('certifications', 'N/A')}"""
 
-Please create a tailored resume that:
-1. Highlights relevant experience matching the job requirements
-2. Emphasizes skills mentioned in the job posting
-3. Uses keywords from the job description for ATS optimization
-4. Maintains a professional and concise format
-5. Focuses on achievements and measurable results
+        # Raw Original Resume (if available)
+        raw_resume_section = ""
+        if raw_resume_text:
+            raw_resume_section = f"\n\nORIGINAL RESUME TEXT (for reference and context):\n{raw_resume_text[:3000]}"  # Limit to avoid token limits
 
-Format the resume in a clean, professional text format with clear sections."""
+        # Context Sandwich: System Instructions + Job Description + (Structured Profile + Raw Resume)
+        prompt = f"""{system_instructions}
+
+{job_description}
+
+{structured_profile}{raw_resume_section}
+
+INSTRUCTIONS:
+1. Analyze the job posting requirements and identify key skills, technologies, and qualifications needed
+2. Tailor the user's profile to match the job description by:
+   - Rewriting the summary to emphasize relevant experience
+   - Highlighting skills that match the job requirements
+   - Rewriting experience bullet points to emphasize relevant achievements
+   - Using keywords from the job description for ATS optimization
+3. Focus on achievements and measurable results
+4. Maintain accuracy - only use information from the provided profile
+
+Return your response as a JSON object with this exact structure:
+{{
+  "header": {{
+    "name": "Full Name",
+    "title": "Professional Title (tailored to job)",
+    "email": "email@example.com",
+    "phone": "phone number",
+    "location": "City, State/Country",
+    "linkedin": "LinkedIn URL or empty string",
+    "portfolio": "Portfolio URL or empty string"
+  }},
+  "summary": "2-3 sentence professional summary tailored to the job description, emphasizing relevant experience and skills",
+  "skills_highlighted": ["Skill 1", "Skill 2", "Skill 3", ...],
+  "experience": [
+    {{
+      "company": "Company Name",
+      "title": "Job Title",
+      "dates": "Date Range",
+      "bullets": [
+        "Rewritten bullet point emphasizing relevant achievement...",
+        "Another tailored bullet point..."
+      ]
+    }}
+  ],
+  "education": "Education details formatted as text",
+  "certifications": "Certifications, awards, or other achievements formatted as text"
+}}
+
+IMPORTANT: Return ONLY the JSON object, no markdown code blocks, no additional text."""
         
         try:
             payload = {
                 "messages": [
-                    {"role": "system", "content": "You are a professional resume writer with expertise in ATS optimization and career coaching."},
+                    {"role": "system", "content": system_instructions},
                     {"role": "user", "content": prompt}
                 ],
-                "max_tokens": 2000,
-                "temperature": 0.7
+                "max_tokens": 3000,
+                "temperature": 0.7,
+                "response_format": {"type": "json_object"}  # Force JSON output
             }
             
             response = requests.post(self.url, headers=self.headers, json=payload, timeout=60)
             
             if response.status_code == 200:
                 result = response.json()
-                return result['choices'][0]['message']['content']
+                content = result['choices'][0]['message']['content']
+                
+                # Parse JSON response
+                try:
+                    # Remove markdown code blocks if present
+                    content = content.strip()
+                    if content.startswith("```"):
+                        lines = content.split('\n')
+                        content = '\n'.join(lines[1:-1]) if lines[-1].startswith('```') else '\n'.join(lines[1:])
+                    
+                    resume_data = json.loads(content)
+                    return resume_data
+                except json.JSONDecodeError as e:
+                    # Try to extract JSON from response
+                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    if json_match:
+                        resume_data = json.loads(json_match.group())
+                        return resume_data
+                    else:
+                        st.error(f"Could not parse JSON response: {e}")
+                        return None
             else:
                 st.error(f"API Error: {response.status_code} - {response.text}")
                 return None
         except Exception as e:
             st.error(f"Error generating resume: {e}")
             return None
+    
+    def calculate_match_score(self, resume_content, job_description, embedding_generator):
+        """Calculate match score between resume and job description, and identify missing keywords"""
+        try:
+            # Create embeddings for resume and job description
+            resume_embedding = embedding_generator.get_embedding(resume_content)
+            job_embedding = embedding_generator.get_embedding(job_description)
+            
+            if not resume_embedding or not job_embedding:
+                return None, None
+            
+            # Calculate cosine similarity
+            resume_emb = np.array(resume_embedding).reshape(1, -1)
+            job_emb = np.array(job_embedding).reshape(1, -1)
+            similarity = cosine_similarity(resume_emb, job_emb)[0][0]
+            match_score = float(similarity)
+            
+            # Extract keywords from job description using AI
+            keyword_prompt = f"""Extract the most important technical skills, tools, technologies, and qualifications mentioned in this job description. 
+Return ONLY a JSON object with a "keywords" array, no additional text.
+
+Job Description:
+{job_description[:2000]}
+
+Return format: {{"keywords": ["keyword1", "keyword2", "keyword3", ...]}}"""
+            
+            payload = {
+                "messages": [
+                    {"role": "system", "content": "You are a keyword extraction expert. Extract only the most important technical and professional keywords. Return JSON with a 'keywords' array."},
+                    {"role": "user", "content": keyword_prompt}
+                ],
+                "max_tokens": 500,
+                "temperature": 0.3,
+                "response_format": {"type": "json_object"}
+            }
+            
+            response = requests.post(self.url, headers=self.headers, json=payload, timeout=30)
+            
+            missing_keywords = []
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+                    content = result['choices'][0]['message']['content']
+                    # Try to parse keywords
+                    keyword_data = json.loads(content)
+                    job_keywords = keyword_data.get('keywords', [])
+                    
+                    # Check which keywords are missing from resume
+                    resume_lower = resume_content.lower()
+                    for keyword in job_keywords:
+                        if isinstance(keyword, str) and keyword.lower() not in resume_lower:
+                            missing_keywords.append(keyword)
+                except Exception as e:
+                    # If keyword extraction fails, continue without missing keywords
+                    pass
+            
+            return match_score, missing_keywords[:10]  # Limit to top 10 missing keywords
+            
+        except Exception as e:
+            st.warning(f"Could not calculate match score: {e}")
+            return None, None
 
 class IndeedScraperAPI:
     def __init__(self, api_key):
@@ -654,8 +792,268 @@ def display_user_profile():
             time.sleep(1)
             st.rerun()
 
+def render_structured_resume_editor(resume_data):
+    """Render structured resume JSON in editable Streamlit form"""
+    if not resume_data:
+        return None
+    
+    edited_data = {}
+    
+    st.subheader("📋 Your Tailored Resume")
+    st.caption("Edit the sections below to customize your resume")
+    
+    # Header Section
+    with st.expander("👤 Header Information", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            edited_data['header'] = {
+                'name': st.text_input("Full Name", value=resume_data.get('header', {}).get('name', ''), key='resume_name'),
+                'title': st.text_input("Professional Title", value=resume_data.get('header', {}).get('title', ''), key='resume_title'),
+                'email': st.text_input("Email", value=resume_data.get('header', {}).get('email', ''), key='resume_email'),
+                'phone': st.text_input("Phone", value=resume_data.get('header', {}).get('phone', ''), key='resume_phone'),
+            }
+        with col2:
+            edited_data['header']['location'] = st.text_input("Location", value=resume_data.get('header', {}).get('location', ''), key='resume_location')
+            edited_data['header']['linkedin'] = st.text_input("LinkedIn URL", value=resume_data.get('header', {}).get('linkedin', ''), key='resume_linkedin')
+            edited_data['header']['portfolio'] = st.text_input("Portfolio URL", value=resume_data.get('header', {}).get('portfolio', ''), key='resume_portfolio')
+    
+    # Summary
+    edited_data['summary'] = st.text_area(
+        "Professional Summary",
+        value=resume_data.get('summary', ''),
+        height=100,
+        key='resume_summary'
+    )
+    
+    # Skills
+    skills_list = resume_data.get('skills_highlighted', [])
+    skills_text = ', '.join(skills_list) if skills_list else ''
+    skills_input = st.text_area(
+        "Highlighted Skills (comma-separated)",
+        value=skills_text,
+        height=60,
+        key='resume_skills',
+        help="List skills separated by commas"
+    )
+    edited_data['skills_highlighted'] = [s.strip() for s in skills_input.split(',') if s.strip()]
+    
+    # Experience
+    st.subheader("💼 Work Experience")
+    edited_data['experience'] = []
+    
+    experience_list = resume_data.get('experience', [])
+    for i, exp in enumerate(experience_list):
+        with st.expander(f"📌 {exp.get('company', 'Company')} - {exp.get('title', 'Position')}", expanded=(i == 0)):
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                company = st.text_input("Company", value=exp.get('company', ''), key=f'exp_company_{i}')
+                title = st.text_input("Job Title", value=exp.get('title', ''), key=f'exp_title_{i}')
+            with col2:
+                dates = st.text_input("Date Range", value=exp.get('dates', ''), key=f'exp_dates_{i}')
+            
+            st.write("**Key Achievements:**")
+            bullets = exp.get('bullets', [])
+            edited_bullets = []
+            for j, bullet in enumerate(bullets):
+                bullet_text = st.text_area(
+                    f"Bullet {j+1}",
+                    value=bullet,
+                    height=60,
+                    key=f'exp_bullet_{i}_{j}'
+                )
+                if bullet_text.strip():
+                    edited_bullets.append(bullet_text.strip())
+            
+            # Allow adding new bullets
+            if st.button(f"➕ Add Bullet Point", key=f'add_bullet_{i}'):
+                edited_bullets.append("")
+                st.rerun()
+            
+            edited_data['experience'].append({
+                'company': company,
+                'title': title,
+                'dates': dates,
+                'bullets': edited_bullets
+            })
+    
+    # Education
+    edited_data['education'] = st.text_area(
+        "Education",
+        value=resume_data.get('education', ''),
+        height=100,
+        key='resume_education'
+    )
+    
+    # Certifications
+    edited_data['certifications'] = st.text_area(
+        "Certifications & Awards",
+        value=resume_data.get('certifications', ''),
+        height=100,
+        key='resume_certifications'
+    )
+    
+    return edited_data
+
+def generate_docx_from_json(resume_data, filename="resume.docx"):
+    """Generate a professional .docx file from structured resume JSON"""
+    try:
+        from docx import Document
+        from docx.shared import Inches, Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        
+        doc = Document()
+        
+        # Set margins
+        sections = doc.sections
+        for section in sections:
+            section.top_margin = Inches(0.5)
+            section.bottom_margin = Inches(0.5)
+            section.left_margin = Inches(0.75)
+            section.right_margin = Inches(0.75)
+        
+        # Header Section
+        header = resume_data.get('header', {})
+        if header.get('name'):
+            name_para = doc.add_paragraph()
+            name_run = name_para.add_run(header['name'])
+            name_run.font.size = Pt(18)
+            name_run.font.bold = True
+            name_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        # Contact information
+        contact_info = []
+        if header.get('email'):
+            contact_info.append(header['email'])
+        if header.get('phone'):
+            contact_info.append(header['phone'])
+        if header.get('location'):
+            contact_info.append(header['location'])
+        if header.get('linkedin'):
+            contact_info.append(header['linkedin'])
+        if header.get('portfolio'):
+            contact_info.append(header['portfolio'])
+        
+        if contact_info:
+            contact_para = doc.add_paragraph(' | '.join(contact_info))
+            contact_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            contact_para.runs[0].font.size = Pt(10)
+        
+        doc.add_paragraph()  # Spacing
+        
+        # Professional Title
+        if header.get('title'):
+            title_para = doc.add_paragraph(header['title'])
+            title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            title_para.runs[0].font.size = Pt(12)
+            title_para.runs[0].italic = True
+            doc.add_paragraph()  # Spacing
+        
+        # Summary
+        if resume_data.get('summary'):
+            doc.add_heading('Professional Summary', level=2)
+            summary_para = doc.add_paragraph(resume_data['summary'])
+            summary_para.runs[0].font.size = Pt(11)
+            doc.add_paragraph()  # Spacing
+        
+        # Skills
+        skills = resume_data.get('skills_highlighted', [])
+        if skills:
+            doc.add_heading('Key Skills', level=2)
+            skills_text = ' • '.join(skills)
+            skills_para = doc.add_paragraph(skills_text)
+            skills_para.runs[0].font.size = Pt(11)
+            doc.add_paragraph()  # Spacing
+        
+        # Experience
+        experience = resume_data.get('experience', [])
+        if experience:
+            doc.add_heading('Professional Experience', level=2)
+            for exp in experience:
+                # Company and Title
+                exp_header = doc.add_paragraph()
+                exp_header.add_run(exp.get('title', '')).bold = True
+                if exp.get('company'):
+                    exp_header.add_run(f" at {exp['company']}")
+                if exp.get('dates'):
+                    exp_header.add_run(f" | {exp['dates']}").italic = True
+                
+                # Bullet points
+                bullets = exp.get('bullets', [])
+                for bullet in bullets:
+                    if bullet.strip():
+                        bullet_para = doc.add_paragraph(bullet, style='List Bullet')
+                        bullet_para.runs[0].font.size = Pt(10)
+                
+                doc.add_paragraph()  # Spacing between experiences
+        
+        # Education
+        if resume_data.get('education'):
+            doc.add_heading('Education', level=2)
+            edu_para = doc.add_paragraph(resume_data['education'])
+            edu_para.runs[0].font.size = Pt(11)
+            doc.add_paragraph()  # Spacing
+        
+        # Certifications
+        if resume_data.get('certifications'):
+            doc.add_heading('Certifications & Awards', level=2)
+            cert_para = doc.add_paragraph(resume_data['certifications'])
+            cert_para.runs[0].font.size = Pt(11)
+        
+        # Save to BytesIO
+        doc_io = BytesIO()
+        doc.save(doc_io)
+        doc_io.seek(0)
+        return doc_io
+        
+    except Exception as e:
+        st.error(f"Error generating DOCX: {e}")
+        return None
+
+def display_match_score_feedback(match_score, missing_keywords, job_title):
+    """Display match score and feedback to user"""
+    if match_score is None:
+        return
+    
+    st.markdown("---")
+    st.subheader("🎯 Resume Match Analysis")
+    
+    # Match score with color coding
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        score_percent = match_score * 100
+        
+        if score_percent >= 80:
+            score_color = "🟢"
+            feedback = "Excellent match! Your resume aligns well with this position."
+        elif score_percent >= 60:
+            score_color = "🟡"
+            feedback = "Good match. Consider adding more relevant keywords."
+        else:
+            score_color = "🔴"
+            feedback = "Moderate match. Your resume may need more tailoring."
+        
+        st.metric(
+            f"{score_color} Match Score",
+            f"{score_percent:.1f}%",
+            help=feedback
+        )
+    
+    # Missing keywords
+    if missing_keywords:
+        st.warning(f"**Missing Keywords:** {', '.join(missing_keywords[:5])}")
+        if len(missing_keywords) > 5:
+            with st.expander(f"See all {len(missing_keywords)} missing keywords"):
+                st.write(', '.join(missing_keywords))
+        
+        st.info("💡 **Tip:** Consider adding these keywords to your resume if you have experience with them. Be honest - only include skills you actually possess.")
+    else:
+        st.success("✅ Great! Your resume includes the key keywords from the job description.")
+    
+    # Feedback
+    st.caption(f"**Analysis:** {feedback}")
+
 def display_resume_generator():
-    """Display the resume generator interface"""
+    """Display the resume generator interface with structured resume editing"""
     if st.session_state.selected_job is None:
         st.warning("No job selected. Please select a job first.")
         if st.button("← Back to Jobs"):
@@ -692,67 +1090,109 @@ def display_resume_generator():
         if st.button("← Back to Jobs"):
             st.session_state.show_resume_generator = False
             st.session_state.generated_resume = None
+            st.session_state.match_score = None
+            st.session_state.missing_keywords = None
             st.rerun()
     
     st.markdown("---")
     
     # Generate resume button
     if st.button("🚀 Generate Tailored Resume", type="primary", use_container_width=True):
-        with st.spinner("🤖 Creating your personalized resume..."):
+        with st.spinner("🤖 Creating your personalized resume using AI..."):
             text_gen = get_text_generator()
-            resume = text_gen.generate_resume(st.session_state.user_profile, job)
+            # Get raw resume text if available
+            raw_resume_text = st.session_state.get('resume_text')
+            resume_data = text_gen.generate_resume(
+                st.session_state.user_profile, 
+                job,
+                raw_resume_text=raw_resume_text
+            )
             
-            if resume:
-                st.session_state.generated_resume = resume
-                # Clear the widget state to prevent stale cached values
-                if "resume_editor" in st.session_state:
-                    del st.session_state.resume_editor
+            if resume_data:
+                st.session_state.generated_resume = resume_data
+                
+                # Calculate match score
+                with st.spinner("📊 Analyzing resume match..."):
+                    embedding_gen = get_embedding_generator()
+                    # Convert resume JSON to text for comparison
+                    resume_text = json.dumps(resume_data, indent=2)
+                    match_score, missing_keywords = text_gen.calculate_match_score(
+                        resume_text,
+                        job.get('description', ''),
+                        embedding_gen
+                    )
+                    st.session_state.match_score = match_score
+                    st.session_state.missing_keywords = missing_keywords
+                
                 st.success("✅ Resume generated successfully!")
                 st.balloons()
-                # Rerun to update the UI with the generated resume
                 time.sleep(0.5)
                 st.rerun()
             else:
                 st.error("❌ Failed to generate resume. Please try again.")
     
-    # Display generated resume
+    # Display match score if available
+    if st.session_state.generated_resume and st.session_state.get('match_score') is not None:
+        display_match_score_feedback(
+            st.session_state.match_score,
+            st.session_state.missing_keywords,
+            job['title']
+        )
+    
+    # Display generated resume in structured form
     if st.session_state.generated_resume:
         st.markdown("---")
-        st.subheader("📋 Your Tailored Resume")
         
-        # Display resume in a text area for editing
-        edited_resume = st.text_area(
-            "You can edit the resume below:",
-            value=st.session_state.generated_resume,
-            height=600,
-            key="resume_editor"
-        )
+        # Render structured editor
+        edited_resume_data = render_structured_resume_editor(st.session_state.generated_resume)
         
-        # Update if edited (only if the edited value is actually different from current)
-        # This prevents overwriting with stale cached values
-        if edited_resume != st.session_state.generated_resume:
-            st.session_state.generated_resume = edited_resume
+        # Update session state with edited data
+        if edited_resume_data:
+            st.session_state.generated_resume = edited_resume_data
+        
+        st.markdown("---")
         
         # Download buttons
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            # Download as TXT
+            # Download as DOCX
+            docx_file = generate_docx_from_json(
+                st.session_state.generated_resume,
+                filename=f"resume_{job['company']}_{job['title']}.docx"
+            )
+            if docx_file:
+                st.download_button(
+                    label="📥 Download as DOCX",
+                    data=docx_file,
+                    file_name=f"resume_{job['company']}_{job['title']}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True
+                )
+        
+        with col2:
+            # Download as JSON
+            json_data = json.dumps(st.session_state.generated_resume, indent=2)
+            st.download_button(
+                label="📥 Download as JSON",
+                data=json_data,
+                file_name=f"resume_{job['company']}_{job['title']}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+        
+        with col3:
+            # Download as TXT (formatted text version)
+            txt_content = format_resume_as_text(st.session_state.generated_resume)
             st.download_button(
                 label="📥 Download as TXT",
-                data=st.session_state.generated_resume,
+                data=txt_content,
                 file_name=f"resume_{job['company']}_{job['title']}.txt",
                 mime="text/plain",
                 use_container_width=True
             )
         
-        with col2:
-            # Copy to clipboard button
-            if st.button("📋 Copy to Clipboard", use_container_width=True):
-                st.code(st.session_state.generated_resume, language=None)
-                st.info("Select and copy the text above")
-        
-        with col3:
+        with col4:
             # Apply to job button
             if job['url'] != '#':
                 st.link_button(
@@ -761,6 +1201,102 @@ def display_resume_generator():
                     use_container_width=True,
                     type="primary"
                 )
+        
+        # Recalculate match score button
+        if st.button("🔄 Recalculate Match Score", use_container_width=True):
+            with st.spinner("📊 Recalculating match score..."):
+                text_gen = get_text_generator()
+                embedding_gen = get_embedding_generator()
+                resume_text = json.dumps(st.session_state.generated_resume, indent=2)
+                match_score, missing_keywords = text_gen.calculate_match_score(
+                    resume_text,
+                    job.get('description', ''),
+                    embedding_gen
+                )
+                st.session_state.match_score = match_score
+                st.session_state.missing_keywords = missing_keywords
+                st.rerun()
+
+def format_resume_as_text(resume_data):
+    """Format structured resume JSON as plain text"""
+    text = []
+    
+    # Header
+    header = resume_data.get('header', {})
+    if header.get('name'):
+        text.append(header['name'].upper())
+        text.append("")
+    
+    # Contact info
+    contact = []
+    if header.get('email'):
+        contact.append(header['email'])
+    if header.get('phone'):
+        contact.append(header['phone'])
+    if header.get('location'):
+        contact.append(header['location'])
+    if header.get('linkedin'):
+        contact.append(header['linkedin'])
+    if header.get('portfolio'):
+        contact.append(header['portfolio'])
+    
+    if contact:
+        text.append(' | '.join(contact))
+        text.append("")
+    
+    # Title
+    if header.get('title'):
+        text.append(header['title'])
+        text.append("")
+    
+    # Summary
+    if resume_data.get('summary'):
+        text.append("PROFESSIONAL SUMMARY")
+        text.append("-" * 50)
+        text.append(resume_data['summary'])
+        text.append("")
+    
+    # Skills
+    skills = resume_data.get('skills_highlighted', [])
+    if skills:
+        text.append("KEY SKILLS")
+        text.append("-" * 50)
+        text.append(' • '.join(skills))
+        text.append("")
+    
+    # Experience
+    experience = resume_data.get('experience', [])
+    if experience:
+        text.append("PROFESSIONAL EXPERIENCE")
+        text.append("-" * 50)
+        for exp in experience:
+            exp_line = exp.get('title', '')
+            if exp.get('company'):
+                exp_line += f" at {exp['company']}"
+            if exp.get('dates'):
+                exp_line += f" | {exp['dates']}"
+            text.append(exp_line)
+            
+            bullets = exp.get('bullets', [])
+            for bullet in bullets:
+                if bullet.strip():
+                    text.append(f"  • {bullet}")
+            text.append("")
+    
+    # Education
+    if resume_data.get('education'):
+        text.append("EDUCATION")
+        text.append("-" * 50)
+        text.append(resume_data['education'])
+        text.append("")
+    
+    # Certifications
+    if resume_data.get('certifications'):
+        text.append("CERTIFICATIONS & AWARDS")
+        text.append("-" * 50)
+        text.append(resume_data['certifications'])
+    
+    return '\n'.join(text)
 
 def main():
     # Check if resume generator should be shown
