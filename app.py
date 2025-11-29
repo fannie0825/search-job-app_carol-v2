@@ -1750,11 +1750,119 @@ def is_cache_valid(cache_entry):
     # Handle both datetime objects and string timestamps
     if isinstance(expires_at, str):
         try:
-            expires_at = datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
-        except:
-            return False
+            expires_at = datetime.fromisoformat(expires_at)
+        except ValueError:
+            try:
+                expires_at = datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return False
     
     return datetime.now() < expires_at
+
+
+def _build_jobs_cache_key(query, location, max_rows, job_type, country):
+    """Create a unique cache key for job searches."""
+    normalized_query = (query or "").strip().lower()
+    return "|".join([
+        normalized_query,
+        (location or "").strip().lower(),
+        str(max_rows),
+        (job_type or "").strip().lower(),
+        (country or "").strip().lower()
+    ])
+
+
+def _ensure_jobs_cache_structure():
+    """Ensure jobs_cache is always a dict keyed by cache keys (handles legacy formats)."""
+    if 'jobs_cache' not in st.session_state or not isinstance(st.session_state.jobs_cache, dict):
+        st.session_state.jobs_cache = {}
+        return
+    cache = st.session_state.jobs_cache
+    if cache and 'jobs' in cache and isinstance(cache['jobs'], list):
+        cache_key = cache.get('cache_key') or _build_jobs_cache_key(
+            cache.get('query', ''),
+            cache.get('location', 'Hong Kong'),
+            cache.get('count', len(cache.get('jobs', []))),
+            cache.get('job_type', 'fulltime'),
+            cache.get('country', 'hk')
+        )
+        st.session_state.jobs_cache = {cache_key: {**cache, 'cache_key': cache_key}}
+
+
+def _get_cached_jobs(query, location, max_rows, job_type, country):
+    """Return cached jobs for a given search signature if valid."""
+    _ensure_jobs_cache_structure()
+    cache_key = _build_jobs_cache_key(query, location, max_rows, job_type, country)
+    cache_entry = st.session_state.jobs_cache.get(cache_key)
+    if not cache_entry:
+        return None
+    if not is_cache_valid(cache_entry):
+        st.session_state.jobs_cache.pop(cache_key, None)
+        return None
+    return cache_entry
+
+
+def _store_jobs_in_cache(query, location, max_rows, job_type, country, jobs, cache_ttl_hours=24):
+    """Persist job results in cache with TTL metadata."""
+    _ensure_jobs_cache_structure()
+    cache_key = _build_jobs_cache_key(query, location, max_rows, job_type, country)
+    now = datetime.now()
+    expires_at = now + timedelta(hours=cache_ttl_hours)
+    st.session_state.jobs_cache[cache_key] = {
+        'jobs': jobs,
+        'count': len(jobs),
+        'timestamp': now.isoformat(),
+        'query': query,
+        'location': location,
+        'job_type': job_type,
+        'country': country,
+        'cache_key': cache_key,
+        'expires_at': expires_at.isoformat()
+    }
+    return st.session_state.jobs_cache[cache_key]
+
+
+def fetch_jobs_with_cache(scraper, query, location="Hong Kong", max_rows=25, job_type="fulltime",
+                          country="hk", cache_ttl_hours=24, force_refresh=False):
+    """
+    Fetch jobs with session-level caching to avoid RapidAPI rate limits.
+    Set force_refresh=True to bypass cache for a particular query.
+    """
+    if scraper is None:
+        return []
+    _ensure_jobs_cache_structure()
+    cache_key = _build_jobs_cache_key(query, location, max_rows, job_type, country)
+    if force_refresh:
+        if cache_key in st.session_state.jobs_cache:
+            st.caption("🔁 Forcing a fresh job search (cache bypassed)")
+        st.session_state.jobs_cache.pop(cache_key, None)
+    else:
+        cache_entry = _get_cached_jobs(query, location, max_rows, job_type, country)
+        if cache_entry:
+            timestamp = cache_entry.get('timestamp')
+            expires_at = cache_entry.get('expires_at')
+            expires_in_minutes = None
+            if isinstance(expires_at, str):
+                try:
+                    expires_dt = datetime.fromisoformat(expires_at)
+                    expires_in_minutes = max(0, int((expires_dt - datetime.now()).total_seconds() // 60))
+                except ValueError:
+                    pass
+            if timestamp and isinstance(timestamp, str):
+                try:
+                    ts_dt = datetime.fromisoformat(timestamp)
+                    human_ts = ts_dt.strftime("%b %d %H:%M")
+                except ValueError:
+                    human_ts = timestamp
+            else:
+                human_ts = "earlier"
+            remaining_text = f" (~{expires_in_minutes} min left)" if expires_in_minutes is not None else ""
+            st.caption(f"♻️ Using cached job results from {human_ts}{remaining_text}")
+            return cache_entry.get('jobs', [])
+    jobs = scraper.search_jobs(query, location, max_rows, job_type, country)
+    if jobs:
+        _store_jobs_in_cache(query, location, max_rows, job_type, country, jobs, cache_ttl_hours)
+    return jobs
 
 def get_token_tracker():
     """Get or create token usage tracker."""
@@ -3135,8 +3243,17 @@ Return ONLY valid JSON."""
                     scraper = get_job_scraper()
                     
                     with st.spinner("🔄 Fetching jobs and analyzing..."):
-                        # Fetch more jobs initially to allow for filtering
-                        jobs = scraper.search_jobs(search_query, "Hong Kong", 25, "fulltime", "hk")
+                        # Fetch more jobs initially to allow for filtering (with caching)
+                        cache_ttl_hours = 24
+                        jobs = fetch_jobs_with_cache(
+                            scraper,
+                            search_query,
+                            location="Hong Kong",
+                            max_rows=25,
+                            job_type="fulltime",
+                            country="hk",
+                            cache_ttl_hours=cache_ttl_hours
+                        )
                         
                         if jobs:
                             # Apply domain filters
@@ -3150,16 +3267,6 @@ Return ONLY valid JSON."""
                         if not jobs:
                             st.warning("⚠️ No jobs match your filters. Try adjusting your criteria.")
                             return
-                        
-                        # Cache with TTL (24 hours)
-                        cache_ttl_hours = 24
-                        st.session_state.jobs_cache = {
-                            'jobs': jobs,
-                            'count': len(jobs),
-                            'timestamp': datetime.now(),
-                            'query': search_query,
-                            'expires_at': datetime.now() + timedelta(hours=cache_ttl_hours)
-                        }
                         
                         # Perform semantic matching
                         embedding_gen = get_embedding_generator()
@@ -3340,6 +3447,13 @@ def display_refine_results_section(matched_jobs, user_profile):
                 key="refine_salary"
             )
         
+        force_refresh = st.checkbox(
+            "Force new API fetch",
+            value=False,
+            help="Bypass cached results (only if results seem stale).",
+            key="force_refresh_jobs_toggle"
+        )
+        
         if st.button("🔄 Apply Filters & Refresh", type="primary", use_container_width=True):
             # Update session state
             st.session_state.target_domains = target_domains
@@ -3350,7 +3464,17 @@ def display_refine_results_section(matched_jobs, user_profile):
             scraper = get_job_scraper()
             
             with st.spinner("🔄 Refreshing results with new filters..."):
-                jobs = scraper.search_jobs(search_query, "Hong Kong", 25, "fulltime", "hk")
+                cache_ttl_hours = 24
+                jobs = fetch_jobs_with_cache(
+                    scraper,
+                    search_query,
+                    location="Hong Kong",
+                    max_rows=25,
+                    job_type="fulltime",
+                    country="hk",
+                    cache_ttl_hours=cache_ttl_hours,
+                    force_refresh=force_refresh
+                )
                 
                 if jobs:
                     # Apply domain filters
@@ -3364,16 +3488,6 @@ def display_refine_results_section(matched_jobs, user_profile):
                     if not jobs:
                         st.warning("⚠️ No jobs match your filters. Try adjusting your criteria.")
                         return
-                    
-                    # Update cache
-                    cache_ttl_hours = 24
-                    st.session_state.jobs_cache = {
-                        'jobs': jobs,
-                        'count': len(jobs),
-                        'timestamp': datetime.now(),
-                        'query': search_query,
-                        'expires_at': datetime.now() + timedelta(hours=cache_ttl_hours)
-                    }
                     
                     # Re-index and search
                     embedding_gen = get_embedding_generator()
