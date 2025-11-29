@@ -1563,18 +1563,64 @@ class SemanticJobSearch:
         return results
     
     def calculate_skill_match(self, user_skills, job_skills):
-        """Calculate skill-based match score"""
+        """Calculate skill-based match score using semantic similarity (embeddings)"""
         if not user_skills or not job_skills:
             return 0.0, []
         
-        # Normalize skills to lowercase for comparison
-        user_skills_lower = [s.lower().strip() for s in str(user_skills).split(',') if s.strip()]
-        job_skills_lower = [s.lower().strip() for s in job_skills if isinstance(s, str) and s.strip()]
+        # Parse skills into lists
+        user_skills_list = [s.strip() for s in str(user_skills).split(',') if s.strip()]
+        job_skills_list = [s.strip() for s in job_skills if isinstance(s, str) and s.strip()]
         
-        if not user_skills_lower or not job_skills_lower:
+        if not user_skills_list or not job_skills_list:
             return 0.0, []
         
-        # Find matching skills
+        try:
+            # Generate embeddings for all skills
+            user_skill_embeddings = self.embedding_gen.get_embeddings_batch(user_skills_list, batch_size=20)
+            job_skill_embeddings = self.embedding_gen.get_embeddings_batch(job_skills_list, batch_size=20)
+            
+            if not user_skill_embeddings or not job_skill_embeddings:
+                # Fallback to string matching if embeddings fail
+                return self._calculate_skill_match_string_based(user_skills_list, job_skills_list)
+            
+            # Convert to numpy arrays
+            user_embs = np.array(user_skill_embeddings)
+            job_embs = np.array(job_skill_embeddings)
+            
+            # Calculate similarity matrix (cosine similarity between all user skills and job skills)
+            similarity_matrix = cosine_similarity(job_embs, user_embs)
+            
+            # Find best matches: for each job skill, find the best matching user skill
+            # Use a threshold of 0.7 for semantic similarity (adjustable)
+            similarity_threshold = 0.7
+            matched_skills = []
+            matched_indices = set()
+            
+            for job_idx, job_skill in enumerate(job_skills_list):
+                best_match_idx = np.argmax(similarity_matrix[job_idx])
+                best_similarity = similarity_matrix[job_idx][best_match_idx]
+                
+                if best_similarity >= similarity_threshold and best_match_idx not in matched_indices:
+                    matched_skills.append(job_skill)
+                    matched_indices.add(best_match_idx)
+            
+            # Calculate match percentage
+            match_score = len(matched_skills) / len(job_skills_list) if job_skills_list else 0.0
+            # Find missing skills (job skills that weren't matched)
+            missing_skills = [js for js in job_skills_list if js not in matched_skills]
+            
+            return min(match_score, 1.0), missing_skills[:5]
+            
+        except Exception as e:
+            # Fallback to string-based matching if semantic matching fails
+            st.warning(f"⚠️ Semantic skill matching failed, using string matching: {e}")
+            return self._calculate_skill_match_string_based(user_skills_list, job_skills_list)
+    
+    def _calculate_skill_match_string_based(self, user_skills_list, job_skills_list):
+        """Fallback string-based skill matching"""
+        user_skills_lower = [s.lower() for s in user_skills_list]
+        job_skills_lower = [s.lower() for s in job_skills_list]
+        
         matched_skills = []
         for job_skill in job_skills_lower:
             for user_skill in user_skills_lower:
@@ -1582,11 +1628,10 @@ class SemanticJobSearch:
                     matched_skills.append(job_skill)
                     break
         
-        # Calculate match percentage
         match_score = len(matched_skills) / len(job_skills_lower) if job_skills_lower else 0.0
-        missing_skills = [s for s in job_skills_lower if s not in matched_skills]
+        missing_skills = [job_skills_list[i] for i, js in enumerate(job_skills_lower) if js not in matched_skills]
         
-        return min(match_score, 1.0), missing_skills[:5]  # Cap at 1.0 and limit missing skills
+        return min(match_score, 1.0), missing_skills[:5]
 
 def is_cache_valid(cache_entry):
     """Check if cache entry is still valid (not expired)."""
@@ -1664,11 +1709,95 @@ def get_text_generator():
     return st.session_state.text_gen
 
 def extract_salary_from_text(text):
-    """Extract salary information from job description text"""
+    """Extract salary information from job description text using LLM"""
     if not text:
         return None, None
     
-    # Look for common salary patterns in HKD
+    # Limit text length to avoid token limits (check first 3000 chars which usually contains salary info)
+    text_for_extraction = text[:3000] if len(text) > 3000 else text
+    
+    try:
+        text_gen = get_text_generator()
+        
+        prompt = f"""Extract salary information from this job description text. 
+Look for salary ranges, amounts, and compensation details. Normalize everything to monthly HKD (Hong Kong Dollars).
+
+JOB DESCRIPTION TEXT:
+{text_for_extraction}
+
+Extract and return salary information as JSON with this structure:
+{{
+    "min_salary_hkd_monthly": <number or null>,
+    "max_salary_hkd_monthly": <number or null>,
+    "found": true/false,
+    "raw_text": "the exact salary text found in the description"
+}}
+
+Rules:
+- Convert all amounts to monthly HKD (multiply annual by 12, weekly by 4.33, daily by 22)
+- If only one amount is found, set both min and max to that value
+- If a range is found (e.g., "60k-80k"), extract both min and max
+- Handle formats like "competitive", "based on experience", "around 60k-80k annually" by extracting the numeric range
+- If no salary is found, set "found": false and return null for min/max
+- Always return valid JSON, no additional text"""
+
+        payload = {
+            "messages": [
+                {"role": "system", "content": "You are a salary extraction expert. Extract salary information and normalize to monthly HKD. Return only valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 300,
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"}
+        }
+        
+        def make_request():
+            return requests.post(
+                text_gen.url,
+                headers=text_gen.headers,
+                json=payload,
+                timeout=30
+            )
+        
+        response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+        
+        if response and response.status_code == 200:
+            result = response.json()
+            content = result['choices'][0]['message']['content']
+            
+            # Track token usage
+            if text_gen.token_tracker and 'usage' in result:
+                usage = result['usage']
+                prompt_tokens = usage.get('prompt_tokens', 0)
+                completion_tokens = usage.get('completion_tokens', 0)
+                text_gen.token_tracker.add_completion_tokens(prompt_tokens, completion_tokens)
+            
+            # Parse JSON response
+            try:
+                salary_data = json.loads(content)
+                if salary_data.get('found', False):
+                    min_sal = salary_data.get('min_salary_hkd_monthly')
+                    max_sal = salary_data.get('max_salary_hkd_monthly')
+                    if min_sal is not None and max_sal is not None:
+                        return int(min_sal), int(max_sal)
+                    elif min_sal is not None:
+                        return int(min_sal), int(min_sal * 1.2)  # Estimate range
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                # Fallback to regex if LLM parsing fails
+                pass
+        
+        # Fallback to regex-based extraction if LLM fails
+        return extract_salary_from_text_regex(text)
+        
+    except Exception as e:
+        # Fallback to regex if LLM extraction fails
+        return extract_salary_from_text_regex(text)
+
+def extract_salary_from_text_regex(text):
+    """Fallback regex-based salary extraction"""
+    if not text:
+        return None, None
+    
     import re
     patterns = [
         r'HKD\s*\$?\s*(\d{1,3}(?:,\d{3})*(?:k|K)?)\s*[-–—]\s*\$?\s*(\d{1,3}(?:,\d{3})*(?:k|K)?)',
@@ -1896,11 +2025,12 @@ def extract_text_from_resume(uploaded_file):
         return None
 
 def extract_profile_from_resume(resume_text):
-    """Use Azure OpenAI to extract structured profile information from resume text"""
+    """Use Azure OpenAI to extract structured profile information from resume text with two-pass self-correction"""
     try:
         text_gen = get_text_generator()
         
-        prompt = f"""You are an expert at parsing resumes. Extract structured information from the following resume text.
+        # FIRST PASS: Initial extraction
+        prompt_pass1 = f"""You are an expert at parsing resumes. Extract structured information from the following resume text.
 
 RESUME TEXT:
 {resume_text}
@@ -1927,57 +2057,133 @@ Important:
 - Keep the summary concise but informative
 - Return ONLY valid JSON, no additional text or markdown"""
         
-        payload = {
+        payload_pass1 = {
             "messages": [
                 {"role": "system", "content": "You are a resume parser. Extract structured information and return only valid JSON."},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt_pass1}
             ],
             "max_tokens": 2000,
-            "temperature": 0.3
+            "temperature": 0.3,
+            "response_format": {"type": "json_object"}
         }
         
-        def make_request():
+        def make_request_pass1():
             return requests.post(
                 text_gen.url,
                 headers=text_gen.headers,
-                json=payload,
+                json=payload_pass1,
                 timeout=60
             )
         
-        response = api_call_with_retry(make_request, max_retries=3, initial_delay=2)
+        response_pass1 = api_call_with_retry(make_request_pass1, max_retries=3, initial_delay=2)
         
-        if response and response.status_code == 200:
-            result = response.json()
-            content = result['choices'][0]['message']['content']
-            
-            # Try to extract JSON from the response
-            # Sometimes the model returns JSON wrapped in markdown code blocks
-            content = content.strip()
-            if content.startswith("```"):
-                # Remove markdown code blocks
-                lines = content.split('\n')
-                content = '\n'.join(lines[1:-1]) if lines[-1].startswith('```') else '\n'.join(lines[1:])
-            
-            try:
-                profile_data = json.loads(content)
-                return profile_data
-            except json.JSONDecodeError:
-                # Try to find JSON in the response
-                json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                if json_match:
-                    profile_data = json.loads(json_match.group())
-                    return profile_data
-                else:
-                    st.error("Could not parse extracted profile data. Please try again.")
-                    return None
-        else:
-            if response:
-                if response.status_code == 429:
-                    st.error("🚫 Rate limit reached for profile extraction. Please wait a few minutes and try again.")
-                else:
-                    error_detail = response.text[:200] if response.text else "No error details"
-                    st.error(f"API Error: {response.status_code} - {error_detail}")
+        if not response_pass1 or response_pass1.status_code != 200:
+            if response_pass1 and response_pass1.status_code == 429:
+                st.error("🚫 Rate limit reached for profile extraction. Please wait a few minutes and try again.")
+            else:
+                error_detail = response_pass1.text[:200] if response_pass1 and response_pass1.text else "No error details"
+                st.error(f"API Error: {response_pass1.status_code if response_pass1 else 'Unknown'} - {error_detail}")
             return None
+        
+        result_pass1 = response_pass1.json()
+        content_pass1 = result_pass1['choices'][0]['message']['content']
+        
+        # Track token usage for first pass
+        if text_gen.token_tracker and 'usage' in result_pass1:
+            usage = result_pass1['usage']
+            prompt_tokens = usage.get('prompt_tokens', 0)
+            completion_tokens = usage.get('completion_tokens', 0)
+            text_gen.token_tracker.add_completion_tokens(prompt_tokens, completion_tokens)
+        
+        # Parse first pass JSON
+        try:
+            profile_data_pass1 = json.loads(content_pass1)
+        except json.JSONDecodeError:
+            # Try to find JSON in the response
+            json_match = re.search(r'\{.*\}', content_pass1, re.DOTALL)
+            if json_match:
+                profile_data_pass1 = json.loads(json_match.group())
+            else:
+                st.error("Could not parse extracted profile data from first pass. Please try again.")
+                return None
+        
+        # SECOND PASS: Self-correction - verify dates and company names
+        prompt_pass2 = f"""You are a resume quality checker. Review the extracted profile data against the original resume text and verify accuracy, especially for dates and company names.
+
+ORIGINAL RESUME TEXT:
+{resume_text[:4000]}
+
+EXTRACTED PROFILE DATA (from first pass):
+{json.dumps(profile_data_pass1, indent=2)}
+
+Please review and correct the extracted data, paying special attention to:
+1. **Dates** - Verify all employment dates, education dates, and certification dates are accurate
+2. **Company Names** - Verify all company/organization names are spelled correctly
+3. **Job Titles** - Verify job titles are accurate
+4. **Education Institutions** - Verify institution names are correct
+
+Return the corrected profile data in the same JSON format. If everything is correct, return the data as-is. If corrections are needed, return the corrected version.
+
+Return ONLY valid JSON with this structure:
+{{
+    "name": "Full name",
+    "email": "Email address",
+    "phone": "Phone number",
+    "location": "City, State/Country",
+    "linkedin": "LinkedIn URL if mentioned",
+    "portfolio": "Portfolio/website URL if mentioned",
+    "summary": "Professional summary or objective (2-3 sentences)",
+    "experience": "Work experience in chronological order with job titles, companies, dates, and key achievements (formatted as bullet points)",
+    "education": "Education details including degrees, institutions, and graduation dates",
+    "skills": "Comma-separated list of technical and soft skills",
+    "certifications": "Professional certifications, awards, publications, or other achievements"
+}}
+
+Return ONLY valid JSON, no additional text or markdown."""
+        
+        payload_pass2 = {
+            "messages": [
+                {"role": "system", "content": "You are a resume quality checker. Verify and correct extracted data, especially dates and company names. Return only valid JSON."},
+                {"role": "user", "content": prompt_pass2}
+            ],
+            "max_tokens": 2000,
+            "temperature": 0.1,  # Lower temperature for more accurate corrections
+            "response_format": {"type": "json_object"}
+        }
+        
+        def make_request_pass2():
+            return requests.post(
+                text_gen.url,
+                headers=text_gen.headers,
+                json=payload_pass2,
+                timeout=60
+            )
+        
+        response_pass2 = api_call_with_retry(make_request_pass2, max_retries=3, initial_delay=2)
+        
+        if response_pass2 and response_pass2.status_code == 200:
+            result_pass2 = response_pass2.json()
+            content_pass2 = result_pass2['choices'][0]['message']['content']
+            
+            # Track token usage for second pass
+            if text_gen.token_tracker and 'usage' in result_pass2:
+                usage = result_pass2['usage']
+                prompt_tokens = usage.get('prompt_tokens', 0)
+                completion_tokens = usage.get('completion_tokens', 0)
+                text_gen.token_tracker.add_completion_tokens(prompt_tokens, completion_tokens)
+            
+            # Parse second pass JSON (corrected version)
+            try:
+                profile_data_corrected = json.loads(content_pass2)
+                return profile_data_corrected
+            except json.JSONDecodeError:
+                # If second pass fails, return first pass result
+                st.warning("⚠️ Self-correction pass failed, using initial extraction. Some details may need manual verification.")
+                return profile_data_pass1
+        else:
+            # If second pass fails, return first pass result
+            st.warning("⚠️ Self-correction pass failed, using initial extraction. Some details may need manual verification.")
+            return profile_data_pass1
             
     except Exception as e:
         st.error(f"Error extracting profile: {e}")
