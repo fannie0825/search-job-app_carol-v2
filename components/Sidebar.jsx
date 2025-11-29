@@ -5,11 +5,17 @@ import { useFileUpload } from '../hooks/useFileUpload';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import LoadingSpinner from './LoadingSpinner';
 
-const Sidebar = ({ isOpen, onClose, isMobile, onFileUploaded, onAnalyze, toast }) => {
+const Sidebar = ({ isOpen, onClose, isMobile, onFileUploaded, onFetchJobs, onAnalyze, toast }) => {
   const [targetIndustries, setTargetIndustries] = useLocalStorage('careerlens_industries', ['FinTech']);
   const [minSalary, setMinSalary] = useLocalStorage('careerlens_min_salary', 4000);
   const [maxSalary, setMaxSalary] = useLocalStorage('careerlens_max_salary', 90000);
   const [uploadedFileName, setUploadedFileName] = useState(null);
+  
+  // Job fetch inputs
+  const [jobKeywords, setJobKeywords] = useLocalStorage('careerlens_job_keywords', '');
+  const [jobLocation, setJobLocation] = useLocalStorage('careerlens_job_location', 'Hong Kong');
+  const [jobType, setJobType] = useLocalStorage('careerlens_job_type', 'fulltime');
+  const [numJobs, setNumJobs] = useLocalStorage('careerlens_num_jobs', 25);
 
   const { uploadFile, uploading, progress, uploadedFile, reset } = useFileUpload(
     (fileResult, profile) => {
@@ -196,18 +202,90 @@ const Sidebar = ({ isOpen, onClose, isMobile, onFileUploaded, onAnalyze, toast }
               </div>
             </div>
           </div>
+
+          {/* Job Fetch Inputs */}
+          <div className="space-y-4 pt-4 border-t border-navy-light">
+            <h3 className="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wide">
+              Job Search Parameters
+            </h3>
+            
+            {/* Keywords */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-2">
+                Keywords
+              </label>
+              <input
+                type="text"
+                value={jobKeywords}
+                onChange={(e) => setJobKeywords(e.target.value)}
+                placeholder="e.g., Software Engineer, Product Manager"
+                className="w-full px-4 py-2 bg-navy-light border border-navy rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+              />
+            </div>
+
+            {/* Location */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-2">
+                Location
+              </label>
+              <input
+                type="text"
+                value={jobLocation}
+                onChange={(e) => setJobLocation(e.target.value)}
+                placeholder="Hong Kong"
+                className="w-full px-4 py-2 bg-navy-light border border-navy rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+              />
+            </div>
+
+            {/* Job Type */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-2">
+                Job Type
+              </label>
+              <select
+                value={jobType}
+                onChange={(e) => setJobType(e.target.value)}
+                className="w-full px-4 py-2 bg-navy-light border border-navy rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-accent"
+              >
+                <option value="fulltime">Full-time</option>
+                <option value="parttime">Part-time</option>
+                <option value="contract">Contract</option>
+                <option value="internship">Internship</option>
+              </select>
+            </div>
+
+            {/* Number of Jobs */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-2">
+                Number of Jobs to Fetch
+              </label>
+              <input
+                type="number"
+                min="5"
+                max="50"
+                value={numJobs}
+                onChange={(e) => setNumJobs(Math.max(5, Math.min(50, Number(e.target.value))))}
+                className="w-full px-4 py-2 bg-navy-light border border-navy rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-accent"
+              />
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Primary Action Button */}
-      <div className="p-6 border-t border-navy-light">
+      {/* Action Buttons */}
+      <div className="p-6 border-t border-navy-light space-y-3">
+        {/* Step 1: Fetch Market Jobs */}
         <button
           onClick={() => {
             if (!uploadedFileName) {
               toast?.warning('Please upload a resume first');
               return;
             }
-            onAnalyze?.({
+            onFetchJobs?.({
+              keywords: jobKeywords,
+              location: jobLocation,
+              jobType: jobType,
+              numJobs: numJobs,
               industries: targetIndustries,
               minSalary,
               maxSalary,
@@ -224,8 +302,29 @@ const Sidebar = ({ isOpen, onClose, isMobile, onFileUploaded, onAnalyze, toast }
               Uploading...
             </span>
           ) : (
-            'Analyze & Benchmark'
+            'Fetch Market Jobs'
           )}
+        </button>
+
+        {/* Step 2: Analyze and Rank */}
+        <button
+          onClick={() => {
+            if (!uploadedFileName) {
+              toast?.warning('Please upload a resume first');
+              return;
+            }
+            onAnalyze?.({
+              industries: targetIndustries,
+              minSalary,
+              maxSalary,
+            });
+          }}
+          disabled={uploading || !uploadedFileName}
+          className={`w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-lg transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 ${
+            uploading || !uploadedFileName ? 'opacity-50 cursor-not-allowed' : ''
+          }`}
+        >
+          Analyze and Rank Top 15 Matches
         </button>
       </div>
     </div>

@@ -102,6 +102,59 @@ const mockApiService = {
       generatedAt: new Date().toISOString(),
     };
   },
+
+  async fetchJobs(filters) {
+    await delay(2000);
+    // Return raw job listings without ranking or embeddings
+    const mockJobs = [
+      {
+        id: 'job_1',
+        title: 'Senior Software Engineer - FinTech',
+        company: 'HSBC Digital',
+        location: 'Central, Hong Kong',
+        jobUrl: 'https://indeed.com/viewjob?jk=123',
+        description: 'We are looking for an experienced software engineer...',
+      },
+      {
+        id: 'job_2',
+        title: 'Product Manager - Digital Banking',
+        company: 'Standard Chartered',
+        location: 'Admiralty, Hong Kong',
+        jobUrl: 'https://indeed.com/viewjob?jk=456',
+        description: 'Join our digital transformation team...',
+      },
+      {
+        id: 'job_3',
+        title: 'Cloud Solutions Architect',
+        company: 'AWS Hong Kong',
+        location: 'Wan Chai, Hong Kong',
+        jobUrl: 'https://indeed.com/viewjob?jk=789',
+        description: 'Design and implement cloud solutions...',
+      },
+      {
+        id: 'job_4',
+        title: 'Data Analytics Manager',
+        company: 'Deloitte',
+        location: 'Central, Hong Kong',
+        jobUrl: 'https://indeed.com/viewjob?jk=101',
+        description: 'Lead analytics initiatives for clients...',
+      },
+      {
+        id: 'job_5',
+        title: 'ESG Strategy Consultant',
+        company: 'EY Hong Kong',
+        location: 'Central, Hong Kong',
+        jobUrl: 'https://indeed.com/viewjob?jk=102',
+        description: 'Help clients develop ESG strategies...',
+      },
+    ];
+    
+    return {
+      jobs: mockJobs.slice(0, filters.numJobs || 25),
+      count: mockJobs.length,
+      fetchedAt: new Date().toISOString(),
+    };
+  },
 };
 
 export default mockApiService;
