@@ -1623,22 +1623,36 @@ def get_embedding_generator():
     return st.session_state.embedding_gen
 
 def get_job_scraper():
-    """Get multi-source job aggregator with failover."""
+    """Get multi-source job aggregator with failover.
+    
+    Uses RAPIDAPI_KEY for primary source (Indeed).
+    Optionally uses LINKEDIN_API_KEY or RAPIDAPI_KEY_FALLBACK for fallback source.
+    If no fallback key is provided, uses the same RAPIDAPI_KEY (may not work if API requires separate subscription).
+    """
     if 'job_aggregator' not in st.session_state:
-        # Use secrets instead of hardcoded values
+        # Primary source: Indeed (required)
         RAPIDAPI_KEY = st.secrets.get("RAPIDAPI_KEY", "")
+        if not RAPIDAPI_KEY:
+            st.error("⚠️ RAPIDAPI_KEY is required in secrets. Please configure it in your .streamlit/secrets.toml")
+            return None
         
-        # Primary source: Indeed
         primary_source = IndeedScraperAPI(RAPIDAPI_KEY)
         
-        # Fallback source: LinkedIn (optional, only if API key is available)
+        # Fallback source: LinkedIn (optional)
+        # Try to get a separate API key for fallback, otherwise use the same key
+        fallback_key = (
+            st.secrets.get("LINKEDIN_API_KEY") or 
+            st.secrets.get("RAPIDAPI_KEY_FALLBACK") or 
+            RAPIDAPI_KEY  # Fallback to same key if no separate key provided
+        )
+        
         fallback_source = None
         try:
-            # Try to use the same RapidAPI key for LinkedIn (if supported)
-            # In production, you might want a separate key
-            fallback_source = LinkedInJobsAPI(RAPIDAPI_KEY)
-        except:
-            pass  # Fallback source is optional
+            fallback_source = LinkedInJobsAPI(fallback_key)
+        except Exception as e:
+            # Fallback source is optional - silently fail
+            # The aggregator will work with just the primary source
+            pass
         
         st.session_state.job_aggregator = MultiSourceJobAggregator(primary_source, fallback_source)
     
