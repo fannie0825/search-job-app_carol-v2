@@ -3455,7 +3455,7 @@ Return ONLY valid JSON."""
                         jobs_to_index_limit = _determine_index_limit(len(jobs), desired_matches)
                         top_match_count = min(desired_matches, jobs_to_index_limit)
                         search_engine = SemanticJobSearch(embedding_gen)
-                        search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
+                        # search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)  # Disabled to save embedding token costs and avoid Rate Limit 429 errors
                         
                         # Use pre-computed resume embedding if available (simplified - no query string needed)
                         resume_embedding = st.session_state.get('resume_embedding')
