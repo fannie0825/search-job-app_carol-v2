@@ -23,6 +23,39 @@ import tiktoken
 import hashlib
 
 
+def _coerce_positive_int(value, default, minimum=1):
+    """Ensure configuration values are positive integers."""
+    try:
+        if value is None:
+            raise ValueError
+        coerced = int(value)
+        return max(minimum, coerced)
+    except (ValueError, TypeError):
+        return default
+
+
+def _get_config_int(key, default, minimum=1):
+    """Look up configuration values from Streamlit secrets or environment."""
+    try:
+        secrets_value = st.secrets.get(key)
+    except Exception:
+        secrets_value = None
+    env_value = os.getenv(key)
+    candidate = secrets_value if secrets_value not in (None, "") else env_value
+    return _coerce_positive_int(candidate, default, minimum)
+
+
+DEFAULT_EMBEDDING_BATCH_SIZE = _get_config_int("EMBEDDING_BATCH_SIZE", 50, minimum=10)
+DEFAULT_MAX_JOBS_TO_INDEX = _get_config_int("MAX_JOBS_TO_INDEX", 50, minimum=30)
+
+
+def _determine_index_limit(total_jobs, desired_top_matches):
+    """Cap how many jobs we embed per search to avoid unnecessary API calls."""
+    baseline = max(desired_top_matches * 3, 30)
+    limit = min(DEFAULT_MAX_JOBS_TO_INDEX, baseline)
+    return min(total_jobs, limit)
+
+
 def _parse_retry_after_value(value):
     """Convert Retry-After style header values into seconds."""
     if not value:
@@ -127,6 +160,11 @@ def _determine_retry_delay(response, fallback_delay, max_delay):
     return max(1, min(fallback_delay, max_delay)), "fallback"
 
 
+def _calculate_exponential_delay(initial_delay, attempt, max_delay):
+    """Calculate exponential backoff delay for the current retry attempt."""
+    return max(1, min(initial_delay * (2 ** attempt), max_delay))
+
+
 def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
     """
     Execute an API call with exponential backoff retry logic for rate limit errors (429).
@@ -151,7 +189,7 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
             # Rate limit error (429) - retry with exponential backoff
             elif response.status_code == 429:
                 if attempt < max_retries - 1:
-                    fallback_delay = initial_delay * (2 ** attempt)
+                    fallback_delay = _calculate_exponential_delay(initial_delay, attempt, max_delay)
                     delay, delay_source = _determine_retry_delay(response, fallback_delay, max_delay)
                     source_note = ""
                     if delay_source != "fallback":
@@ -182,7 +220,7 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
                 
         except requests.exceptions.Timeout:
             if attempt < max_retries - 1:
-                delay = initial_delay * (2 ** attempt)
+                delay = _calculate_exponential_delay(initial_delay, attempt, max_delay)
                 st.warning(f"⏳ Request timed out. Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
                 time.sleep(delay)
                 continue
@@ -192,7 +230,7 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
         
         except requests.exceptions.RequestException as e:
             if attempt < max_retries - 1:
-                delay = initial_delay * (2 ** attempt)
+                delay = _calculate_exponential_delay(initial_delay, attempt, max_delay)
                 st.warning(f"⏳ Network error. Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
                 time.sleep(delay)
                 continue
@@ -803,7 +841,7 @@ class APIMEmbeddingGenerator:
             def make_request():
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
             
-            response = api_call_with_retry(make_request, max_retries=3, initial_delay=2)
+            response = api_call_with_retry(make_request, max_retries=3)
             
             if response and response.status_code == 200:
                 result = response.json()
@@ -824,13 +862,18 @@ class APIMEmbeddingGenerator:
             st.error(f"Error generating embedding: {e}")
             return None
     
-    def get_embeddings_batch(self, texts, batch_size=10):
+    def get_embeddings_batch(self, texts, batch_size=None):
+        if not texts:
+            return []
+        effective_batch_size = batch_size or DEFAULT_EMBEDDING_BATCH_SIZE
+        if effective_batch_size <= 0:
+            effective_batch_size = DEFAULT_EMBEDDING_BATCH_SIZE
         embeddings = []
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+        for i in range(0, len(texts), effective_batch_size):
+            batch = texts[i:i + effective_batch_size]
             progress = (i + len(batch)) / len(texts)
             progress_bar.progress(progress)
             status_text.text(f"🔄 Generating embeddings: {i + len(batch)}/{len(texts)}")
@@ -845,7 +888,7 @@ class APIMEmbeddingGenerator:
                 def make_request():
                     return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
                 
-                response = api_call_with_retry(make_request, max_retries=3, initial_delay=2)
+                response = api_call_with_retry(make_request, max_retries=3)
                 
                 if response and response.status_code == 200:
                     data = response.json()
@@ -861,7 +904,7 @@ class APIMEmbeddingGenerator:
                         self.token_tracker.add_embedding_tokens(batch_tokens)
                 else:
                     # Fallback to individual calls if batch fails
-                    st.warning(f"⚠️ Batch embedding failed, trying individual calls for batch {i//batch_size + 1}...")
+                    st.warning(f"⚠️ Batch embedding failed, trying individual calls for batch {i//effective_batch_size + 1}...")
                     for text in batch:
                         emb = self.get_embedding(text)
                         if emb:
@@ -989,7 +1032,7 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks, no additional t
             def make_request():
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=60)
             
-            response = api_call_with_retry(make_request, max_retries=3, initial_delay=3)
+            response = api_call_with_retry(make_request, max_retries=3)
             
             if response and response.status_code == 200:
                 result = response.json()
@@ -1073,7 +1116,7 @@ Return format: {{"keywords": ["keyword1", "keyword2", "keyword3", ...]}}"""
             def make_request():
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
             
-            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+            response = api_call_with_retry(make_request, max_retries=2)
             
             missing_keywords = []
             if response and response.status_code == 200:
@@ -1140,7 +1183,7 @@ Choose the most appropriate seniority level based on the job titles."""
             def make_request():
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
             
-            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+            response = api_call_with_retry(make_request, max_retries=2)
             if response and response.status_code == 200:
                 result = response.json()
                 content = result['choices'][0]['message']['content']
@@ -1209,7 +1252,7 @@ Focus on certifications that are:
             def make_request():
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
             
-            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+            response = api_call_with_retry(make_request, max_retries=2)
             if response and response.status_code == 200:
                 result = response.json()
                 content = result['choices'][0]['message']['content']
@@ -1267,7 +1310,7 @@ Return ONLY the recruiter note text, no labels or formatting."""
             def make_request():
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
             
-            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+            response = api_call_with_retry(make_request, max_retries=2)
             if response and response.status_code == 200:
                 result = response.json()
                 
@@ -1566,14 +1609,25 @@ class SemanticJobSearch:
         job_str = f"{job.get('title', '')}_{job.get('company', '')}_{job.get('url', '')}"
         return hashlib.md5(job_str.encode()).hexdigest()
     
-    def index_jobs(self, jobs):
-        self.jobs = jobs
+    def index_jobs(self, jobs, max_jobs_to_index=None):
+        if not jobs:
+            st.warning("⚠️ No jobs available to index.")
+            self.jobs = []
+            self.job_embeddings = []
+            return
+        
+        effective_limit = max_jobs_to_index or min(len(jobs), DEFAULT_MAX_JOBS_TO_INDEX)
+        effective_limit = max(1, min(effective_limit, len(jobs)))
+        if effective_limit < len(jobs):
+            st.info(f"⚙️ Indexing first {effective_limit} of {len(jobs)} jobs to reduce embedding API calls.")
+        jobs_to_index = jobs[:effective_limit]
+        self.jobs = jobs_to_index
         job_texts = [
             f"{job['title']} at {job['company']}. {job['description']} Skills: {', '.join(job['skills'][:5])}"
-            for job in jobs
+            for job in jobs_to_index
         ]
         
-        st.info(f"📊 Indexing {len(jobs)} jobs...")
+        st.info(f"📊 Indexing {len(jobs_to_index)} jobs...")
         
         # Check if embeddings exist in persistent store
         if self.use_persistent_store and self.collection:
@@ -1585,7 +1639,7 @@ class SemanticJobSearch:
                     existing_ids = set(existing_data['ids'])
                 
                 # Generate hashes for current jobs
-                job_hashes = [self._get_job_hash(job) for job in jobs]
+                job_hashes = [self._get_job_hash(job) for job in jobs_to_index]
                 
                 # Find jobs that need new embeddings
                 jobs_to_embed = []
@@ -1600,7 +1654,7 @@ class SemanticJobSearch:
                     new_embeddings = self.embedding_gen.get_embeddings_batch(jobs_to_embed)
                     
                     # Store new embeddings
-                    for i, (idx, emb) in enumerate(zip(indices_to_embed, new_embeddings)):
+                    for idx, emb in zip(indices_to_embed, new_embeddings):
                         job_hash = job_hashes[idx]
                         self.collection.add(
                             ids=[job_hash],
@@ -1610,7 +1664,7 @@ class SemanticJobSearch:
                         )
                 
                 # Retrieve all embeddings from store
-                all_hashes = [self._get_job_hash(job) for job in jobs]
+                all_hashes = job_hashes
                 retrieved = self.collection.get(ids=all_hashes, include=['embeddings'])
                 
                 if retrieved and 'embeddings' in retrieved and retrieved['embeddings']:
@@ -1623,7 +1677,7 @@ class SemanticJobSearch:
                     # Fallback: generate all embeddings
                     self.job_embeddings = self.embedding_gen.get_embeddings_batch(job_texts)
                     # Store all embeddings
-                    for idx, (job, job_text, emb) in enumerate(zip(jobs, job_texts, self.job_embeddings)):
+                    for idx, (job, job_text, emb) in enumerate(zip(jobs_to_index, job_texts, self.job_embeddings)):
                         job_hash = self._get_job_hash(job)
                         self.collection.upsert(
                             ids=[job_hash],
@@ -1870,6 +1924,16 @@ def get_token_tracker():
         st.session_state.token_tracker = TokenUsageTracker()
     return st.session_state.token_tracker
 
+
+@st.cache_resource(show_spinner=False)
+def _create_embedding_generator_resource(api_key, endpoint):
+    return APIMEmbeddingGenerator(api_key, endpoint)
+
+
+@st.cache_resource(show_spinner=False)
+def _create_text_generator_resource(api_key, endpoint):
+    return AzureOpenAITextGenerator(api_key, endpoint)
+
 def get_embedding_generator():
     if st.session_state.embedding_gen is None:
         try:
@@ -1882,13 +1946,17 @@ def get_embedding_generator():
                 return None
             
             token_tracker = get_token_tracker()
-            st.session_state.embedding_gen = APIMEmbeddingGenerator(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, token_tracker)
+            generator = _create_embedding_generator_resource(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)
+            generator.token_tracker = token_tracker
+            st.session_state.embedding_gen = generator
         except KeyError as e:
             st.error(f"⚠️ Missing required secret: {e}. Please configure your Streamlit secrets.")
             return None
         except Exception as e:
             st.error(f"⚠️ Error initializing embedding generator: {e}")
             return None
+    else:
+        st.session_state.embedding_gen.token_tracker = get_token_tracker()
     return st.session_state.embedding_gen
 
 def get_job_scraper():
@@ -1935,13 +2003,17 @@ def get_text_generator():
                 return None
             
             token_tracker = get_token_tracker()
-            st.session_state.text_gen = AzureOpenAITextGenerator(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, token_tracker)
+            generator = _create_text_generator_resource(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)
+            generator.token_tracker = token_tracker
+            st.session_state.text_gen = generator
         except KeyError as e:
             st.error(f"⚠️ Missing required secret: {e}. Please configure your Streamlit secrets.")
             return None
         except Exception as e:
             st.error(f"⚠️ Error initializing text generator: {e}")
             return None
+    else:
+        st.session_state.text_gen.token_tracker = get_token_tracker()
     return st.session_state.text_gen
 
 def extract_salary_from_text(text):
@@ -1997,7 +2069,7 @@ Rules:
                 timeout=30
             )
         
-        response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+        response = api_call_with_retry(make_request, max_retries=2)
         
         if response and response.status_code == 200:
             result = response.json()
@@ -2318,7 +2390,7 @@ Important:
                 timeout=60
             )
         
-        response_pass1 = api_call_with_retry(make_request_pass1, max_retries=3, initial_delay=2)
+        response_pass1 = api_call_with_retry(make_request_pass1, max_retries=3)
         
         if not response_pass1 or response_pass1.status_code != 200:
             if response_pass1 and response_pass1.status_code == 429:
@@ -2403,7 +2475,7 @@ Return ONLY valid JSON, no additional text or markdown."""
                 timeout=60
             )
         
-        response_pass2 = api_call_with_retry(make_request_pass2, max_retries=3, initial_delay=2)
+        response_pass2 = api_call_with_retry(make_request_pass2, max_retries=3)
         
         if response_pass2 and response_pass2.status_code == 200:
             result_pass2 = response_pass2.json()
@@ -2620,7 +2692,7 @@ Return ONLY the improved summary text, no additional explanation."""
                 def make_request():
                     return requests.post(text_gen.url, headers=text_gen.headers, json=payload, timeout=30)
                 
-                response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+                response = api_call_with_retry(make_request, max_retries=2)
                 if response and response.status_code == 200:
                     result = response.json()
                     refined_text = result['choices'][0]['message']['content'].strip()
@@ -2692,7 +2764,7 @@ Return ONLY the improved bullet point, no additional text."""
                             def make_request():
                                 return requests.post(text_gen.url, headers=text_gen.headers, json=payload, timeout=30)
                             
-                            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+                            response = api_call_with_retry(make_request, max_retries=2)
                             if response and response.status_code == 200:
                                 result = response.json()
                                 refined_text = result['choices'][0]['message']['content'].strip()
@@ -3179,7 +3251,7 @@ Return ONLY valid JSON."""
                     def make_domain_request():
                         return requests.post(text_gen.url, headers=text_gen.headers, json=domain_payload, timeout=30)
                     
-                    domain_response = api_call_with_retry(make_domain_request, max_retries=2, initial_delay=2)
+                    domain_response = api_call_with_retry(make_domain_request, max_retries=2)
                     inferred_domains = []
                     if domain_response and domain_response.status_code == 200:
                         result = domain_response.json()
@@ -3220,7 +3292,7 @@ Return ONLY valid JSON."""
                     def make_salary_request():
                         return requests.post(text_gen.url, headers=text_gen.headers, json=salary_payload, timeout=30)
                     
-                    salary_response = api_call_with_retry(make_salary_request, max_retries=2, initial_delay=2)
+                    salary_response = api_call_with_retry(make_salary_request, max_retries=2)
                     inferred_salary = 45000  # Default
                     if salary_response and salary_response.status_code == 200:
                         result = salary_response.json()
@@ -3270,8 +3342,11 @@ Return ONLY valid JSON."""
                         
                         # Perform semantic matching
                         embedding_gen = get_embedding_generator()
+                        desired_matches = min(15, len(jobs))
+                        jobs_to_index_limit = _determine_index_limit(len(jobs), desired_matches)
+                        top_match_count = min(desired_matches, jobs_to_index_limit)
                         search_engine = SemanticJobSearch(embedding_gen)
-                        search_engine.index_jobs(jobs)
+                        search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
                         
                         # Build query from resume/profile
                         if st.session_state.resume_text:
@@ -3282,7 +3357,7 @@ Return ONLY valid JSON."""
                         else:
                             resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
                         
-                        results = search_engine.search(resume_query, top_k=min(15, len(jobs)))
+                        results = search_engine.search(resume_query, top_k=top_match_count)
                         
                         if results:
                             # Calculate skill matches
@@ -3491,8 +3566,11 @@ def display_refine_results_section(matched_jobs, user_profile):
                     
                     # Re-index and search
                     embedding_gen = get_embedding_generator()
+                    desired_matches = min(15, len(jobs))
+                    jobs_to_index_limit = _determine_index_limit(len(jobs), desired_matches)
+                    top_match_count = min(desired_matches, jobs_to_index_limit)
                     search_engine = SemanticJobSearch(embedding_gen)
-                    search_engine.index_jobs(jobs)
+                    search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
                     
                     # Build query from resume/profile
                     if st.session_state.resume_text:
@@ -3503,7 +3581,7 @@ def display_refine_results_section(matched_jobs, user_profile):
                     else:
                         resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
                     
-                    results = search_engine.search(resume_query, top_k=min(15, len(jobs)))
+                    results = search_engine.search(resume_query, top_k=top_match_count)
                     
                     # Calculate skill matches
                     user_skills = st.session_state.user_profile.get('skills', '')
