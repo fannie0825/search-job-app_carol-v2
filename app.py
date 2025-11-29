@@ -3026,19 +3026,20 @@ Return ONLY valid JSON."""
                         
                         results = search_engine.search(resume_query, top_k=min(15, len(jobs)))
                         
-                        # Calculate skill matches
-                        user_skills = st.session_state.user_profile.get('skills', '')
-                        for result in results:
-                            job_skills = result['job'].get('skills', [])
-                            skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
-                            result['skill_match_score'] = skill_score
-                            result['missing_skills'] = missing_skills
-                        
-                        st.session_state.matched_jobs = results
-                        st.session_state.dashboard_ready = True
-                        st.rerun()
-                    else:
-                        st.error("❌ No jobs found. Please try different filters.")
+                        if results:
+                            # Calculate skill matches
+                            user_skills = st.session_state.user_profile.get('skills', '')
+                            for result in results:
+                                job_skills = result['job'].get('skills', [])
+                                skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
+                                result['skill_match_score'] = skill_score
+                                result['missing_skills'] = missing_skills
+                            
+                            st.session_state.matched_jobs = results
+                            st.session_state.dashboard_ready = True
+                            st.rerun()
+                        else:
+                            st.error("❌ No jobs found. Please try different filters.")
         
         # Token Usage Display
         st.markdown("---")
