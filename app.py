@@ -16,6 +16,89 @@ from io import BytesIO
 import PyPDF2
 from docx import Document
 
+def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
+    """
+    Execute an API call with exponential backoff retry logic for rate limit errors (429).
+    
+    Args:
+        func: Function that makes the API call and returns a requests.Response object
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds before first retry
+        max_delay: Maximum delay in seconds between retries
+    
+    Returns:
+        Response object if successful, None otherwise
+    """
+    for attempt in range(max_retries):
+        try:
+            response = func()
+            
+            # Success case
+            if response.status_code in [200, 201]:
+                return response
+            
+            # Rate limit error (429) - retry with exponential backoff
+            elif response.status_code == 429:
+                if attempt < max_retries - 1:
+                    # Calculate delay with exponential backoff
+                    delay = min(initial_delay * (2 ** attempt), max_delay)
+                    
+                    # Try to get retry-after header if available
+                    retry_after = response.headers.get('Retry-After')
+                    if retry_after:
+                        try:
+                            delay = int(retry_after)
+                        except ValueError:
+                            pass
+                    
+                    # Show user-friendly message
+                    st.warning(f"⏳ Rate limit reached. Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    # Max retries exceeded
+                    error_msg = (
+                        "🚫 **Rate Limit Exceeded**\n\n"
+                        "The API rate limit has been reached. Please:\n"
+                        "1. Wait a few minutes and try again\n"
+                        "2. Reduce the number of jobs you're searching for\n"
+                        "3. Check your API quota/limits\n\n"
+                        f"Status: {response.status_code}"
+                    )
+                    st.error(error_msg)
+                    return None
+            
+            # Other HTTP errors - don't retry
+            else:
+                return response
+                
+        except requests.exceptions.Timeout:
+            if attempt < max_retries - 1:
+                delay = initial_delay * (2 ** attempt)
+                st.warning(f"⏳ Request timed out. Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                continue
+            else:
+                st.error("❌ Request timed out after multiple attempts. Please try again later.")
+                return None
+        
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries - 1:
+                delay = initial_delay * (2 ** attempt)
+                st.warning(f"⏳ Network error. Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                continue
+            else:
+                st.error(f"❌ Network error after multiple attempts: {e}")
+                return None
+        
+        except Exception as e:
+            # Unexpected errors - don't retry
+            st.error(f"❌ Unexpected error: {e}")
+            return None
+    
+    return None
+
 st.set_page_config(
     page_title="CareerLens - Executive Dashboard",
     page_icon="🔍",
@@ -602,12 +685,18 @@ class APIMEmbeddingGenerator:
     def get_embedding(self, text):
         try:
             payload = {"input": text, "model": self.deployment}
-            response = requests.post(self.url, headers=self.headers, json=payload, timeout=30)
-            if response.status_code == 200:
+            
+            def make_request():
+                return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
+            
+            response = api_call_with_retry(make_request, max_retries=3, initial_delay=2)
+            
+            if response and response.status_code == 200:
                 return response.json()['data'][0]['embedding']
+            
             return None
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error generating embedding: {e}")
             return None
     
     def get_embeddings_batch(self, texts, batch_size=10):
@@ -623,13 +712,25 @@ class APIMEmbeddingGenerator:
             
             try:
                 payload = {"input": batch, "model": self.deployment}
-                response = requests.post(self.url, headers=self.headers, json=payload, timeout=30)
                 
-                if response.status_code == 200:
+                def make_request():
+                    return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
+                
+                response = api_call_with_retry(make_request, max_retries=3, initial_delay=2)
+                
+                if response and response.status_code == 200:
                     data = response.json()
                     sorted_data = sorted(data['data'], key=lambda x: x['index'])
                     embeddings.extend([item['embedding'] for item in sorted_data])
-            except:
+                else:
+                    # Fallback to individual calls if batch fails
+                    st.warning(f"⚠️ Batch embedding failed, trying individual calls for batch {i//batch_size + 1}...")
+                    for text in batch:
+                        emb = self.get_embedding(text)
+                        if emb:
+                            embeddings.append(emb)
+            except Exception as e:
+                st.warning(f"⚠️ Error processing batch, trying individual calls: {e}")
                 for text in batch:
                     emb = self.get_embedding(text)
                     if emb:
@@ -746,9 +847,12 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks, no additional t
                 "response_format": {"type": "json_object"}  # Force JSON output
             }
             
-            response = requests.post(self.url, headers=self.headers, json=payload, timeout=60)
+            def make_request():
+                return requests.post(self.url, headers=self.headers, json=payload, timeout=60)
             
-            if response.status_code == 200:
+            response = api_call_with_retry(make_request, max_retries=3, initial_delay=3)
+            
+            if response and response.status_code == 200:
                 result = response.json()
                 content = result['choices'][0]['message']['content']
                 
@@ -772,7 +876,9 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks, no additional t
                         st.error(f"Could not parse JSON response: {e}")
                         return None
             else:
-                st.error(f"API Error: {response.status_code} - {response.text}")
+                if response:
+                    error_detail = response.text[:200] if response.text else "No error details"
+                    st.error(f"API Error: {response.status_code} - {error_detail}")
                 return None
         except Exception as e:
             st.error(f"Error generating resume: {e}")
@@ -818,10 +924,13 @@ Return format: {{"keywords": ["keyword1", "keyword2", "keyword3", ...]}}"""
                 "response_format": {"type": "json_object"}
             }
             
-            response = requests.post(self.url, headers=self.headers, json=payload, timeout=30)
+            def make_request():
+                return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
+            
+            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
             
             missing_keywords = []
-            if response.status_code == 200:
+            if response and response.status_code == 200:
                 try:
                     result = response.json()
                     content = result['choices'][0]['message']['content']
@@ -874,8 +983,11 @@ Choose the most appropriate seniority level based on the job titles."""
                 "response_format": {"type": "json_object"}
             }
             
-            response = requests.post(self.url, headers=self.headers, json=payload, timeout=30)
-            if response.status_code == 200:
+            def make_request():
+                return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
+            
+            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+            if response and response.status_code == 200:
                 result = response.json()
                 content = result['choices'][0]['message']['content']
                 data = json.loads(content)
@@ -932,8 +1044,11 @@ Focus on certifications that are:
                 "response_format": {"type": "json_object"}
             }
             
-            response = requests.post(self.url, headers=self.headers, json=payload, timeout=30)
-            if response.status_code == 200:
+            def make_request():
+                return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
+            
+            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+            if response and response.status_code == 200:
                 result = response.json()
                 content = result['choices'][0]['message']['content']
                 data = json.loads(content)
@@ -979,8 +1094,11 @@ Return ONLY the recruiter note text, no labels or formatting."""
                 "temperature": 0.7
             }
             
-            response = requests.post(self.url, headers=self.headers, json=payload, timeout=30)
-            if response.status_code == 200:
+            def make_request():
+                return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
+            
+            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+            if response and response.status_code == 200:
                 result = response.json()
                 return result['choices'][0]['message']['content'].strip()
         except:
@@ -1017,9 +1135,12 @@ class IndeedScraperAPI:
         }
         
         try:
-            response = requests.post(self.url, headers=self.headers, json=payload, timeout=60)
+            def make_request():
+                return requests.post(self.url, headers=self.headers, json=payload, timeout=60)
             
-            if response.status_code == 201:
+            response = api_call_with_retry(make_request, max_retries=3, initial_delay=3)
+            
+            if response and response.status_code == 201:
                 data = response.json()
                 jobs = []
                 
@@ -1033,7 +1154,12 @@ class IndeedScraperAPI:
                 
                 return jobs
             else:
-                st.error(f"API Error: {response.status_code}")
+                if response:
+                    if response.status_code == 429:
+                        st.error("🚫 Rate limit reached for job search API. Please wait a few minutes and try again.")
+                    else:
+                        error_detail = response.text[:200] if response.text else "No error details"
+                        st.error(f"API Error: {response.status_code} - {error_detail}")
                 return []
                 
         except Exception as e:
@@ -1433,14 +1559,17 @@ Important:
             "temperature": 0.3
         }
         
-        response = requests.post(
-            text_gen.url,
-            headers=text_gen.headers,
-            json=payload,
-            timeout=60
-        )
+        def make_request():
+            return requests.post(
+                text_gen.url,
+                headers=text_gen.headers,
+                json=payload,
+                timeout=60
+            )
         
-        if response.status_code == 200:
+        response = api_call_with_retry(make_request, max_retries=3, initial_delay=2)
+        
+        if response and response.status_code == 200:
             result = response.json()
             content = result['choices'][0]['message']['content']
             
@@ -1465,7 +1594,12 @@ Important:
                     st.error("Could not parse extracted profile data. Please try again.")
                     return None
         else:
-            st.error(f"API Error: {response.status_code} - {response.text}")
+            if response:
+                if response.status_code == 429:
+                    st.error("🚫 Rate limit reached for profile extraction. Please wait a few minutes and try again.")
+                else:
+                    error_detail = response.text[:200] if response.text else "No error details"
+                    st.error(f"API Error: {response.status_code} - {error_detail}")
             return None
             
     except Exception as e:
