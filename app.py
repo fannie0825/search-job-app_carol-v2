@@ -2342,12 +2342,44 @@ def render_structured_resume_editor(resume_data):
             edited_data['header']['portfolio'] = st.text_input("Portfolio URL", value=resume_data.get('header', {}).get('portfolio', ''), key='resume_portfolio')
     
     # Summary
-    edited_data['summary'] = st.text_area(
-        "Professional Summary",
-        value=resume_data.get('summary', ''),
-        height=100,
-        key='resume_summary'
-    )
+    col_summary1, col_summary2 = st.columns([4, 1])
+    with col_summary1:
+        edited_data['summary'] = st.text_area(
+            "Professional Summary",
+            value=resume_data.get('summary', ''),
+            height=100,
+            key='resume_summary'
+        )
+    with col_summary2:
+        if st.button("✨ Refine with AI", key='refine_summary', use_container_width=True, help="Use AI to improve this section"):
+            with st.spinner("🤖 Refining summary..."):
+                text_gen = get_text_generator()
+                refinement_prompt = f"""Improve this professional summary. Make it more impactful, quantified, and tailored. Keep it concise (2-3 sentences).
+
+Current Summary:
+{edited_data.get('summary', resume_data.get('summary', ''))}
+
+Return ONLY the improved summary text, no additional explanation."""
+                
+                payload = {
+                    "messages": [
+                        {"role": "system", "content": "You are a resume writing expert. Improve professional summaries to be more impactful and quantified."},
+                        {"role": "user", "content": refinement_prompt}
+                    ],
+                    "max_tokens": 200,
+                    "temperature": 0.7
+                }
+                
+                def make_request():
+                    return requests.post(text_gen.url, headers=text_gen.headers, json=payload, timeout=30)
+                
+                response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+                if response and response.status_code == 200:
+                    result = response.json()
+                    refined_text = result['choices'][0]['message']['content'].strip()
+                    # Update the text area value
+                    st.session_state['resume_summary'] = refined_text
+                    st.rerun()
     
     # Skills
     skills_list = resume_data.get('skills_highlighted', [])
@@ -2379,12 +2411,44 @@ def render_structured_resume_editor(resume_data):
             bullets = exp.get('bullets', [])
             edited_bullets = []
             for j, bullet in enumerate(bullets):
-                bullet_text = st.text_area(
-                    f"Bullet {j+1}",
-                    value=bullet,
-                    height=60,
-                    key=f'exp_bullet_{i}_{j}'
-                )
+                col_bullet1, col_bullet2 = st.columns([4, 1])
+                with col_bullet1:
+                    bullet_text = st.text_area(
+                        f"Bullet {j+1}",
+                        value=bullet,
+                        height=60,
+                        key=f'exp_bullet_{i}_{j}'
+                    )
+                with col_bullet2:
+                    if st.button("✨", key=f'refine_bullet_{i}_{j}', help="Refine this bullet with AI", use_container_width=True):
+                        with st.spinner("🤖 Refining..."):
+                            text_gen = get_text_generator()
+                            refinement_prompt = f"""Improve this resume bullet point. Make it more quantified, impactful, and achievement-focused. Use numbers, percentages, or metrics when possible.
+
+Current Bullet:
+{bullet_text if bullet_text else bullet}
+
+Return ONLY the improved bullet point, no additional text."""
+                            
+                            payload = {
+                                "messages": [
+                                    {"role": "system", "content": "You are a resume writing expert. Improve bullet points to be quantified and achievement-focused."},
+                                    {"role": "user", "content": refinement_prompt}
+                                ],
+                                "max_tokens": 150,
+                                "temperature": 0.7
+                            }
+                            
+                            def make_request():
+                                return requests.post(text_gen.url, headers=text_gen.headers, json=payload, timeout=30)
+                            
+                            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+                            if response and response.status_code == 200:
+                                result = response.json()
+                                refined_text = result['choices'][0]['message']['content'].strip()
+                                st.session_state[f'exp_bullet_{i}_{j}'] = refined_text
+                                st.rerun()
+                
                 if bullet_text.strip():
                     edited_bullets.append(bullet_text.strip())
             
@@ -2679,9 +2743,24 @@ def display_resume_generator():
         st.markdown("---")
         
         # Download buttons
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
+            # Download as PDF
+            pdf_file = generate_pdf_from_json(
+                st.session_state.generated_resume,
+                filename=f"resume_{job['company']}_{job['title']}.pdf"
+            )
+            if pdf_file:
+                st.download_button(
+                    label="📥 Download as PDF",
+                    data=pdf_file,
+                    file_name=f"resume_{job['company']}_{job['title']}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+        
+        with col2:
             # Download as DOCX
             docx_file = generate_docx_from_json(
                 st.session_state.generated_resume,
@@ -2696,7 +2775,7 @@ def display_resume_generator():
                     use_container_width=True
                 )
         
-        with col2:
+        with col3:
             # Download as JSON
             json_data = json.dumps(st.session_state.generated_resume, indent=2)
             st.download_button(
@@ -2707,7 +2786,7 @@ def display_resume_generator():
                 use_container_width=True
             )
         
-        with col3:
+        with col4:
             # Download as TXT (formatted text version)
             txt_content = format_resume_as_text(st.session_state.generated_resume)
             st.download_button(
@@ -2718,7 +2797,7 @@ def display_resume_generator():
                 use_container_width=True
             )
         
-        with col4:
+        with col5:
             # Apply to job button
             if job['url'] != '#':
                 st.link_button(
@@ -2792,31 +2871,6 @@ def render_sidebar():
                             }
                             st.success("✅ Profile extracted!")
         
-        # Market Filters Section
-        st.markdown("---")
-        st.markdown("### 2. Refine Market Scope")
-        
-        # Target Domains
-        target_domains = st.multiselect(
-            "Select Target Domains (HK Focus)",
-            options=["FinTech", "ESG & Sustainability", "Data Analytics", "Digital Transformation", 
-                    "Investment Banking", "Consulting", "Technology", "Healthcare", "Education"],
-            default=[],
-            key="careerlens_domains"
-        )
-        st.session_state.target_domains = target_domains
-        
-        # Salary Expectations
-        salary_expectation = st.slider(
-            "Min. Monthly Salary Expectation (HKD)",
-            min_value=20000,
-            max_value=150000,
-            value=45000,
-            step=5000,
-            key="careerlens_salary"
-        )
-        st.session_state.salary_expectation = salary_expectation
-        
         # Primary Action Button
         st.markdown("---")
         analyze_button = st.button(
@@ -2831,22 +2885,116 @@ def render_sidebar():
             if not st.session_state.resume_text and not st.session_state.user_profile.get('summary'):
                 st.error("⚠️ Please upload your CV first!")
             else:
-                # Fetch jobs based on filters
-                search_query = " ".join(target_domains) if target_domains else "Hong Kong jobs"
-                scraper = get_job_scraper()
+                # Automatically infer target domains and salary from profile
+                text_gen = get_text_generator()
+                user_profile = st.session_state.user_profile
+                profile_text = f"{user_profile.get('summary', '')} {user_profile.get('experience', '')} {user_profile.get('skills', '')}"
                 
-                with st.spinner("🔄 Fetching jobs and analyzing..."):
-                    # Fetch more jobs initially to allow for filtering
-                    jobs = scraper.search_jobs(search_query, "Hong Kong", 25, "fulltime", "hk")
+                with st.spinner("🤖 Analyzing your profile to infer preferences..."):
+                    # Infer target domains
+                    domain_prompt = f"""Based on this professional profile, identify the most relevant target domains/industries for job search in Hong Kong.
+
+Profile:
+{profile_text[:2000]}
+
+Return a JSON object with:
+{{
+    "domains": ["Domain1", "Domain2", "Domain3"],
+    "reasoning": "brief explanation"
+}}
+
+Choose from: FinTech, ESG & Sustainability, Data Analytics, Digital Transformation, Investment Banking, Consulting, Technology, Healthcare, Education
+
+Return ONLY valid JSON."""
                     
-                    if jobs:
-                        # Apply domain filters
-                        if target_domains:
-                            jobs = filter_jobs_by_domains(jobs, target_domains)
+                    domain_payload = {
+                        "messages": [
+                            {"role": "system", "content": "You are a career advisor. Analyze profiles and suggest relevant job domains. Return only JSON."},
+                            {"role": "user", "content": domain_prompt}
+                        ],
+                        "max_tokens": 200,
+                        "temperature": 0.3,
+                        "response_format": {"type": "json_object"}
+                    }
+                    
+                    def make_domain_request():
+                        return requests.post(text_gen.url, headers=text_gen.headers, json=domain_payload, timeout=30)
+                    
+                    domain_response = api_call_with_retry(make_domain_request, max_retries=2, initial_delay=2)
+                    inferred_domains = []
+                    if domain_response and domain_response.status_code == 200:
+                        result = domain_response.json()
+                        content = result['choices'][0]['message']['content']
+                        try:
+                            domain_data = json.loads(content)
+                            inferred_domains = domain_data.get('domains', [])
+                            if text_gen.token_tracker and 'usage' in result:
+                                usage = result['usage']
+                                text_gen.token_tracker.add_completion_tokens(usage.get('prompt_tokens', 0), usage.get('completion_tokens', 0))
+                        except:
+                            pass
+                    
+                    # Infer salary expectation
+                    salary_prompt = f"""Based on this professional profile and Hong Kong market rates, estimate a reasonable minimum monthly salary expectation in HKD.
+
+Profile:
+{profile_text[:2000]}
+
+Return a JSON object with:
+{{
+    "min_salary_hkd_monthly": <number>,
+    "reasoning": "brief explanation"
+}}
+
+Return ONLY valid JSON."""
+                    
+                    salary_payload = {
+                        "messages": [
+                            {"role": "system", "content": "You are a salary advisor for Hong Kong market. Estimate reasonable salary expectations. Return only JSON."},
+                            {"role": "user", "content": salary_prompt}
+                        ],
+                        "max_tokens": 150,
+                        "temperature": 0.2,
+                        "response_format": {"type": "json_object"}
+                    }
+                    
+                    def make_salary_request():
+                        return requests.post(text_gen.url, headers=text_gen.headers, json=salary_payload, timeout=30)
+                    
+                    salary_response = api_call_with_retry(make_salary_request, max_retries=2, initial_delay=2)
+                    inferred_salary = 45000  # Default
+                    if salary_response and salary_response.status_code == 200:
+                        result = salary_response.json()
+                        content = result['choices'][0]['message']['content']
+                        try:
+                            salary_data = json.loads(content)
+                            inferred_salary = int(salary_data.get('min_salary_hkd_monthly', 45000))
+                            if text_gen.token_tracker and 'usage' in result:
+                                usage = result['usage']
+                                text_gen.token_tracker.add_completion_tokens(usage.get('prompt_tokens', 0), usage.get('completion_tokens', 0))
+                        except:
+                            pass
+                    
+                    # Store inferred values
+                    st.session_state.target_domains = inferred_domains
+                    st.session_state.salary_expectation = inferred_salary
+                    
+                    # Build search query from inferred domains
+                    search_query = " ".join(inferred_domains) if inferred_domains else "Hong Kong jobs"
+                    scraper = get_job_scraper()
+                    
+                    with st.spinner("🔄 Fetching jobs and analyzing..."):
+                        # Fetch more jobs initially to allow for filtering
+                        jobs = scraper.search_jobs(search_query, "Hong Kong", 25, "fulltime", "hk")
                         
-                        # Apply salary filter
-                        if salary_expectation > 0:
-                            jobs = filter_jobs_by_salary(jobs, salary_expectation)
+                        if jobs:
+                            # Apply domain filters
+                            if inferred_domains:
+                                jobs = filter_jobs_by_domains(jobs, inferred_domains)
+                            
+                            # Apply salary filter
+                            if inferred_salary > 0:
+                                jobs = filter_jobs_by_salary(jobs, inferred_salary)
                         
                         if not jobs:
                             st.warning("⚠️ No jobs match your filters. Try adjusting your criteria.")
@@ -3005,6 +3153,102 @@ def display_market_positioning_profile(matched_jobs, user_profile):
             delta="Unlock 15% more roles",
             delta_color="off"
         )
+
+def display_refine_results_section(matched_jobs, user_profile):
+    """Display Refine Results section with filters"""
+    st.markdown("---")
+    with st.expander("🔧 Refine Results", expanded=False):
+        st.markdown("### Adjust Search Criteria")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Target Domains
+            current_domains = st.session_state.get('target_domains', [])
+            target_domains = st.multiselect(
+                "Target Domains (HK Focus)",
+                options=["FinTech", "ESG & Sustainability", "Data Analytics", "Digital Transformation", 
+                        "Investment Banking", "Consulting", "Technology", "Healthcare", "Education"],
+                default=current_domains,
+                key="refine_domains"
+            )
+        
+        with col2:
+            # Salary Expectations
+            current_salary = st.session_state.get('salary_expectation', 45000)
+            salary_expectation = st.slider(
+                "Min. Monthly Salary Expectation (HKD)",
+                min_value=20000,
+                max_value=150000,
+                value=current_salary,
+                step=5000,
+                key="refine_salary"
+            )
+        
+        if st.button("🔄 Apply Filters & Refresh", type="primary", use_container_width=True):
+            # Update session state
+            st.session_state.target_domains = target_domains
+            st.session_state.salary_expectation = salary_expectation
+            
+            # Re-fetch and filter jobs
+            search_query = " ".join(target_domains) if target_domains else "Hong Kong jobs"
+            scraper = get_job_scraper()
+            
+            with st.spinner("🔄 Refreshing results with new filters..."):
+                jobs = scraper.search_jobs(search_query, "Hong Kong", 25, "fulltime", "hk")
+                
+                if jobs:
+                    # Apply domain filters
+                    if target_domains:
+                        jobs = filter_jobs_by_domains(jobs, target_domains)
+                    
+                    # Apply salary filter
+                    if salary_expectation > 0:
+                        jobs = filter_jobs_by_salary(jobs, salary_expectation)
+                    
+                    if not jobs:
+                        st.warning("⚠️ No jobs match your filters. Try adjusting your criteria.")
+                        return
+                    
+                    # Update cache
+                    cache_ttl_hours = 24
+                    st.session_state.jobs_cache = {
+                        'jobs': jobs,
+                        'count': len(jobs),
+                        'timestamp': datetime.now(),
+                        'query': search_query,
+                        'expires_at': datetime.now() + timedelta(hours=cache_ttl_hours)
+                    }
+                    
+                    # Re-index and search
+                    embedding_gen = get_embedding_generator()
+                    search_engine = SemanticJobSearch(embedding_gen)
+                    search_engine.index_jobs(jobs)
+                    
+                    # Build query from resume/profile
+                    if st.session_state.resume_text:
+                        resume_query = st.session_state.resume_text
+                        if st.session_state.user_profile.get('summary'):
+                            profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
+                            resume_query = f"{resume_query} {profile_data}"
+                    else:
+                        resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
+                    
+                    results = search_engine.search(resume_query, top_k=min(15, len(jobs)))
+                    
+                    # Calculate skill matches
+                    user_skills = st.session_state.user_profile.get('skills', '')
+                    for result in results:
+                        job_skills = result['job'].get('skills', [])
+                        skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
+                        result['skill_match_score'] = skill_score
+                        result['missing_skills'] = missing_skills
+                    
+                    st.session_state.matched_jobs = results
+                    st.session_state.dashboard_ready = True
+                    st.rerun()
+                else:
+                    st.error("❌ No jobs found. Please try different filters.")
 
 def display_ranked_matches_table(matched_jobs, user_profile):
     """Display Smart Ranked Matches Table with interactive dataframe"""
@@ -3210,6 +3454,153 @@ def display_match_breakdown(matched_jobs, user_profile):
                 st.markdown("---")
                 st.link_button("🚀 Apply to Job", job_url, use_container_width=True, type="secondary")
 
+def generate_pdf_from_json(resume_data, filename="resume.pdf"):
+    """Generate a professional PDF file from structured resume JSON"""
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        
+        # Create PDF in memory
+        pdf_io = BytesIO()
+        doc = SimpleDocTemplate(pdf_io, pagesize=letter,
+                               rightMargin=0.75*inch, leftMargin=0.75*inch,
+                               topMargin=0.5*inch, bottomMargin=0.5*inch)
+        
+        # Container for the 'Flowable' objects
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # Custom styles
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=18,
+            textColor='black',
+            spaceAfter=6,
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold'
+        )
+        
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontSize=12,
+            textColor='black',
+            spaceAfter=6,
+            spaceBefore=12,
+            fontName='Helvetica-Bold'
+        )
+        
+        normal_style = ParagraphStyle(
+            'CustomNormal',
+            parent=styles['Normal'],
+            fontSize=10,
+            textColor='black',
+            spaceAfter=6,
+            leading=12
+        )
+        
+        contact_style = ParagraphStyle(
+            'CustomContact',
+            parent=styles['Normal'],
+            fontSize=9,
+            textColor='black',
+            spaceAfter=12,
+            alignment=TA_CENTER
+        )
+        
+        # Header Section
+        header = resume_data.get('header', {})
+        if header.get('name'):
+            elements.append(Paragraph(header['name'], title_style))
+            elements.append(Spacer(1, 0.1*inch))
+        
+        # Contact information
+        contact_info = []
+        if header.get('email'):
+            contact_info.append(header['email'])
+        if header.get('phone'):
+            contact_info.append(header['phone'])
+        if header.get('location'):
+            contact_info.append(header['location'])
+        if header.get('linkedin'):
+            contact_info.append(header['linkedin'])
+        if header.get('portfolio'):
+            contact_info.append(header['portfolio'])
+        
+        if contact_info:
+            elements.append(Paragraph(' | '.join(contact_info), contact_style))
+            elements.append(Spacer(1, 0.1*inch))
+        
+        # Professional Title
+        if header.get('title'):
+            elements.append(Paragraph(header['title'], contact_style))
+            elements.append(Spacer(1, 0.15*inch))
+        
+        # Summary
+        if resume_data.get('summary'):
+            elements.append(Paragraph('Professional Summary', heading_style))
+            elements.append(Paragraph(resume_data['summary'], normal_style))
+            elements.append(Spacer(1, 0.1*inch))
+        
+        # Skills
+        skills = resume_data.get('skills_highlighted', [])
+        if skills:
+            elements.append(Paragraph('Key Skills', heading_style))
+            skills_text = ' • '.join(skills)
+            elements.append(Paragraph(skills_text, normal_style))
+            elements.append(Spacer(1, 0.1*inch))
+        
+        # Experience
+        experience = resume_data.get('experience', [])
+        if experience:
+            elements.append(Paragraph('Professional Experience', heading_style))
+            for exp in experience:
+                # Company and Title
+                exp_header_parts = []
+                if exp.get('title'):
+                    exp_header_parts.append(f"<b>{exp['title']}</b>")
+                if exp.get('company'):
+                    exp_header_parts.append(f" at {exp['company']}")
+                if exp.get('dates'):
+                    exp_header_parts.append(f" | <i>{exp['dates']}</i>")
+                
+                if exp_header_parts:
+                    elements.append(Paragraph(''.join(exp_header_parts), normal_style))
+                
+                # Bullet points
+                bullets = exp.get('bullets', [])
+                for bullet in bullets:
+                    if bullet.strip():
+                        elements.append(Paragraph(f"• {bullet}", normal_style))
+                
+                elements.append(Spacer(1, 0.1*inch))
+        
+        # Education
+        if resume_data.get('education'):
+            elements.append(Paragraph('Education', heading_style))
+            elements.append(Paragraph(resume_data['education'], normal_style))
+            elements.append(Spacer(1, 0.1*inch))
+        
+        # Certifications
+        if resume_data.get('certifications'):
+            elements.append(Paragraph('Certifications & Awards', heading_style))
+            elements.append(Paragraph(resume_data['certifications'], normal_style))
+        
+        # Build PDF
+        doc.build(elements)
+        pdf_io.seek(0)
+        return pdf_io
+        
+    except Exception as e:
+        st.error(f"Error generating PDF: {e}")
+        return None
+
 def format_resume_as_text(resume_data):
     """Format structured resume JSON as plain text"""
     text = []
@@ -3308,6 +3699,12 @@ def main():
     
     # Display Market Positioning Profile (Top Section)
     display_market_positioning_profile(
+        st.session_state.matched_jobs,
+        st.session_state.user_profile
+    )
+    
+    # Display Refine Results Section
+    display_refine_results_section(
         st.session_state.matched_jobs,
         st.session_state.user_profile
     )
