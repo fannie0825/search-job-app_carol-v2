@@ -9,7 +9,9 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 import time
-from datetime import datetime, timedelta
+import math
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 import json
 import re
 from io import BytesIO
@@ -19,6 +21,111 @@ import chromadb
 from chromadb.config import Settings
 import tiktoken
 import hashlib
+
+
+def _parse_retry_after_value(value):
+    """Convert Retry-After style header values into seconds."""
+    if not value:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    # Try numeric (int or float)
+    try:
+        seconds = float(value)
+        if seconds >= 0:
+            return int(math.ceil(seconds))
+    except (ValueError, TypeError):
+        pass
+    # Try HH:MM:SS format
+    if value.count(':') == 2:
+        try:
+            hours, minutes, seconds = value.split(':')
+            total_seconds = int(hours) * 3600 + int(minutes) * 60 + int(float(seconds))
+            if total_seconds >= 0:
+                return total_seconds
+        except (ValueError, TypeError):
+            pass
+    # Try HTTP-date format
+    try:
+        retry_time = parsedate_to_datetime(value)
+        if retry_time:
+            if retry_time.tzinfo is None:
+                retry_time = retry_time.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            delta = (retry_time - now).total_seconds()
+            if delta > 0:
+                return int(math.ceil(delta))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return None
+
+
+def _extract_delay_from_body(response):
+    """Attempt to read retry hints from JSON/text error bodies."""
+    if response is None:
+        return None
+    message = None
+    try:
+        data = response.json()
+        if isinstance(data, dict):
+            error = data.get('error') or {}
+            if isinstance(error, dict):
+                message = error.get('message') or error.get('code')
+            if not message:
+                message = data.get('message')
+    except (ValueError, json.JSONDecodeError):
+        pass
+    if not message:
+        message = response.text or ""
+    if not message:
+        return None
+    match = re.search(r'after\s+(\d+)\s+seconds?', message, re.IGNORECASE)
+    if match:
+        try:
+            seconds = int(match.group(1))
+            if seconds >= 0:
+                return seconds
+        except ValueError:
+            pass
+    return None
+
+
+def _determine_retry_delay(response, fallback_delay, max_delay):
+    """Use headers/body hints to determine how long to wait before retrying."""
+    if response is not None:
+        headers = response.headers or {}
+        header_candidates = [
+            'Retry-After',
+            'x-ms-retry-after-ms',
+            'x-ms-retry-after',
+            'x-ratelimit-reset-requests',
+            'x-ratelimit-reset-tokens',
+            'x-ratelimit-reset',
+        ]
+        for header in header_candidates:
+            raw_value = headers.get(header)
+            if not raw_value:
+                continue
+            # Headers with milliseconds suffix
+            if header.endswith('-ms'):
+                try:
+                    ms = float(raw_value)
+                    if ms >= 0:
+                        seconds = int(math.ceil(ms / 1000.0))
+                        return max(1, min(seconds, max_delay)), f"header:{header}"
+                except (ValueError, TypeError):
+                    continue
+            else:
+                parsed = _parse_retry_after_value(raw_value)
+                if parsed is not None:
+                    return max(1, min(parsed, max_delay)), f"header:{header}"
+        # Fallback to error body hints
+        body_delay = _extract_delay_from_body(response)
+        if body_delay is not None:
+            return max(1, min(body_delay, max_delay)), "body"
+    return max(1, min(fallback_delay, max_delay)), "fallback"
+
 
 def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
     """
@@ -44,19 +151,16 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
             # Rate limit error (429) - retry with exponential backoff
             elif response.status_code == 429:
                 if attempt < max_retries - 1:
-                    # Calculate delay with exponential backoff
-                    delay = min(initial_delay * (2 ** attempt), max_delay)
-                    
-                    # Try to get retry-after header if available
-                    retry_after = response.headers.get('Retry-After')
-                    if retry_after:
-                        try:
-                            delay = int(retry_after)
-                        except ValueError:
-                            pass
-                    
+                    fallback_delay = initial_delay * (2 ** attempt)
+                    delay, delay_source = _determine_retry_delay(response, fallback_delay, max_delay)
+                    source_note = ""
+                    if delay_source != "fallback":
+                        source_note = f" (server hint: {delay_source})"
                     # Show user-friendly message
-                    st.warning(f"⏳ Rate limit reached. Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                    st.warning(
+                        f"⏳ Rate limit reached. Retrying in {delay} seconds{source_note}... "
+                        f"(Attempt {attempt + 1}/{max_retries})"
+                    )
                     time.sleep(delay)
                     continue
                 else:
