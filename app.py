@@ -1625,9 +1625,9 @@ def get_embedding_generator():
 def get_job_scraper():
     """Get multi-source job aggregator with failover.
     
-    Uses RAPIDAPI_KEY for primary source (Indeed).
-    Optionally uses LINKEDIN_API_KEY or RAPIDAPI_KEY_FALLBACK for fallback source.
-    If no fallback key is provided, uses the same RAPIDAPI_KEY (may not work if API requires separate subscription).
+    Uses RAPIDAPI_KEY for both primary (Indeed) and fallback (LinkedIn) sources.
+    If LINKEDIN_API_KEY is set, it will be used for the fallback source instead.
+    Both APIs typically use the same RapidAPI key if subscribed to both.
     """
     if 'job_aggregator' not in st.session_state:
         # Primary source: Indeed (required)
@@ -1639,12 +1639,9 @@ def get_job_scraper():
         primary_source = IndeedScraperAPI(RAPIDAPI_KEY)
         
         # Fallback source: LinkedIn (optional)
-        # Try to get a separate API key for fallback, otherwise use the same key
-        fallback_key = (
-            st.secrets.get("LINKEDIN_API_KEY") or 
-            st.secrets.get("RAPIDAPI_KEY_FALLBACK") or 
-            RAPIDAPI_KEY  # Fallback to same key if no separate key provided
-        )
+        # Use separate key if provided, otherwise use the same RapidAPI key
+        # Most users will use the same RapidAPI key for both APIs
+        fallback_key = st.secrets.get("LINKEDIN_API_KEY") or RAPIDAPI_KEY
         
         fallback_source = None
         try:
