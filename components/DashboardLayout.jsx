@@ -39,6 +39,15 @@ const DashboardLayout = () => {
     }
   };
 
+  /**
+   * Step 1: Fetch Market Jobs
+   * 
+   * Technical Operations:
+   * - Job Fetch (Indeed API): Isolated and gated, no embeddings
+   * - Market Positioning: Based on resume only (GPT-4o), not job list
+   * - Rate Limit: Small burst (Indeed API only)
+   * - UX: ~5 second wait for job titles
+   */
   const handleFetchJobs = async (filters) => {
     if (!profileData) {
       warning('Please upload a resume first');
@@ -48,13 +57,14 @@ const DashboardLayout = () => {
     setLoading(true);
     setIsAnalyzing(false);
     try {
-      // Step 1: Fetch jobs from Indeed (no embeddings)
+      // Step 1: Fetch jobs from Indeed (NO embeddings - just raw job data)
       const jobsResult = await ApiService.fetchJobs(filters);
       const jobs = Array.isArray(jobsResult) ? jobsResult : (jobsResult?.jobs || []);
       setRawJobs(jobs);
       setHasFetchedJobs(true);
 
-      // Get market positioning based on resume only (not job list)
+      // Get market positioning based on resume only (NOT job list)
+      // This uses GPT-4o for resume analysis but does NOT trigger job embeddings
       const positioning = await ApiService.getMarketPositioning(profileData, filters);
       setMarketPositioning(positioning);
 
@@ -72,6 +82,16 @@ const DashboardLayout = () => {
     }
   };
 
+  /**
+   * Step 2: Analyze and Rank Top 15 Matches
+   * 
+   * Technical Operations (High Load):
+   * - Embedding Generation: Semantic Indexing for jobs (Azure OpenAI Embeddings)
+   * - Semantic Search: Cosine Similarity matching
+   * - Skill Matching: Detailed skill overlap analysis
+   * - Rate Limit: Second burst of API calls (Azure Embedding API)
+   * - UX: User commits to 10-15 second AI analysis only when ready
+   */
   const handleAnalyze = async (filters) => {
     if (!profileData) {
       warning('Please upload a resume first');
@@ -86,7 +106,10 @@ const DashboardLayout = () => {
     setLoading(true);
     setIsAnalyzing(true);
     try {
-      // Step 2: Expensive AI processing - semantic indexing, search, and ranking
+      // Step 2: Expensive AI processing - THIS is where embeddings happen
+      // 1. Semantic Indexing (Job Embeddings via Azure OpenAI)
+      // 2. Semantic Search (Cosine Similarity)
+      // 3. Skill Matching
       const matches = await ApiService.getJobMatches(profileData, filters, 15);
       // Handle both { jobs: [...] } and [...] formats
       setJobMatches(Array.isArray(matches) ? matches : (matches?.jobs || []));
