@@ -9,12 +9,16 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import re
 from io import BytesIO
 import PyPDF2
 from docx import Document
+import chromadb
+from chromadb.config import Settings
+import tiktoken
+import hashlib
 
 def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
     """
@@ -669,7 +673,7 @@ if 'dashboard_ready' not in st.session_state:
     st.session_state.dashboard_ready = False
 
 class APIMEmbeddingGenerator:
-    def __init__(self, api_key, endpoint):
+    def __init__(self, api_key, endpoint, token_tracker=None):
         self.api_key = api_key
         # Normalize endpoint: remove trailing slash
         endpoint = endpoint.rstrip('/')
@@ -681,10 +685,16 @@ class APIMEmbeddingGenerator:
         self.api_version = "2024-02-01"
         self.url = f"{self.endpoint}/openai/deployments/{self.deployment}/embeddings?api-version={self.api_version}"
         self.headers = {"api-key": self.api_key, "Content-Type": "application/json"}
+        self.token_tracker = token_tracker
+        self.encoding = tiktoken.get_encoding("cl100k_base")  # For token counting
     
     def get_embedding(self, text):
         try:
             payload = {"input": text, "model": self.deployment}
+            
+            # Count tokens for tracking
+            if self.token_tracker:
+                tokens = len(self.encoding.encode(text))
             
             def make_request():
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
@@ -692,7 +702,18 @@ class APIMEmbeddingGenerator:
             response = api_call_with_retry(make_request, max_retries=3, initial_delay=2)
             
             if response and response.status_code == 200:
-                return response.json()['data'][0]['embedding']
+                result = response.json()
+                embedding = result['data'][0]['embedding']
+                
+                # Track token usage if available in response
+                if self.token_tracker and 'usage' in result:
+                    tokens_used = result['usage'].get('total_tokens', 0)
+                    self.token_tracker.add_embedding_tokens(tokens_used)
+                elif self.token_tracker:
+                    # Fallback to estimated token count
+                    self.token_tracker.add_embedding_tokens(tokens)
+                
+                return embedding
             
             return None
         except Exception as e:
@@ -713,6 +734,10 @@ class APIMEmbeddingGenerator:
             try:
                 payload = {"input": batch, "model": self.deployment}
                 
+                # Count tokens for tracking
+                if self.token_tracker:
+                    batch_tokens = sum(len(self.encoding.encode(text)) for text in batch)
+                
                 def make_request():
                     return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
                 
@@ -722,6 +747,14 @@ class APIMEmbeddingGenerator:
                     data = response.json()
                     sorted_data = sorted(data['data'], key=lambda x: x['index'])
                     embeddings.extend([item['embedding'] for item in sorted_data])
+                    
+                    # Track token usage if available in response
+                    if self.token_tracker and 'usage' in data:
+                        tokens_used = data['usage'].get('total_tokens', 0)
+                        self.token_tracker.add_embedding_tokens(tokens_used)
+                    elif self.token_tracker:
+                        # Fallback to estimated token count
+                        self.token_tracker.add_embedding_tokens(batch_tokens)
                 else:
                     # Fallback to individual calls if batch fails
                     st.warning(f"⚠️ Batch embedding failed, trying individual calls for batch {i//batch_size + 1}...")
@@ -741,7 +774,7 @@ class APIMEmbeddingGenerator:
         return embeddings
 
 class AzureOpenAITextGenerator:
-    def __init__(self, api_key, endpoint):
+    def __init__(self, api_key, endpoint, token_tracker=None):
         self.api_key = api_key
         # Normalize endpoint: remove trailing slash
         endpoint = endpoint.rstrip('/')
@@ -753,6 +786,8 @@ class AzureOpenAITextGenerator:
         self.api_version = "2024-02-01"
         self.url = f"{self.endpoint}/openai/deployments/{self.deployment}/chat/completions?api-version={self.api_version}"
         self.headers = {"api-key": self.api_key, "Content-Type": "application/json"}
+        self.token_tracker = token_tracker
+        self.encoding = tiktoken.get_encoding("cl100k_base")  # For token counting
     
     def generate_resume(self, user_profile, job_posting, raw_resume_text=None):
         """Generate a tailored resume based on user profile and job posting using Context Sandwich approach.
@@ -856,6 +891,13 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks, no additional t
                 result = response.json()
                 content = result['choices'][0]['message']['content']
                 
+                # Track token usage
+                if self.token_tracker and 'usage' in result:
+                    usage = result['usage']
+                    prompt_tokens = usage.get('prompt_tokens', 0)
+                    completion_tokens = usage.get('completion_tokens', 0)
+                    self.token_tracker.add_completion_tokens(prompt_tokens, completion_tokens)
+                
                 # Parse JSON response
                 try:
                     # Remove markdown code blocks if present
@@ -934,6 +976,14 @@ Return format: {{"keywords": ["keyword1", "keyword2", "keyword3", ...]}}"""
                 try:
                     result = response.json()
                     content = result['choices'][0]['message']['content']
+                    
+                    # Track token usage
+                    if self.token_tracker and 'usage' in result:
+                        usage = result['usage']
+                        prompt_tokens = usage.get('prompt_tokens', 0)
+                        completion_tokens = usage.get('completion_tokens', 0)
+                        self.token_tracker.add_completion_tokens(prompt_tokens, completion_tokens)
+                    
                     # Try to parse keywords
                     keyword_data = json.loads(content)
                     job_keywords = keyword_data.get('keywords', [])
@@ -990,6 +1040,14 @@ Choose the most appropriate seniority level based on the job titles."""
             if response and response.status_code == 200:
                 result = response.json()
                 content = result['choices'][0]['message']['content']
+                
+                # Track token usage
+                if self.token_tracker and 'usage' in result:
+                    usage = result['usage']
+                    prompt_tokens = usage.get('prompt_tokens', 0)
+                    completion_tokens = usage.get('completion_tokens', 0)
+                    self.token_tracker.add_completion_tokens(prompt_tokens, completion_tokens)
+                
                 data = json.loads(content)
                 return data.get('seniority', 'Mid-Senior Level')
         except:
@@ -1051,6 +1109,14 @@ Focus on certifications that are:
             if response and response.status_code == 200:
                 result = response.json()
                 content = result['choices'][0]['message']['content']
+                
+                # Track token usage
+                if self.token_tracker and 'usage' in result:
+                    usage = result['usage']
+                    prompt_tokens = usage.get('prompt_tokens', 0)
+                    completion_tokens = usage.get('completion_tokens', 0)
+                    self.token_tracker.add_completion_tokens(prompt_tokens, completion_tokens)
+                
                 data = json.loads(content)
                 return data.get('accreditation', 'PMP or Scrum Master')
         except:
@@ -1100,6 +1166,14 @@ Return ONLY the recruiter note text, no labels or formatting."""
             response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
             if response and response.status_code == 200:
                 result = response.json()
+                
+                # Track token usage
+                if self.token_tracker and 'usage' in result:
+                    usage = result['usage']
+                    prompt_tokens = usage.get('prompt_tokens', 0)
+                    completion_tokens = usage.get('completion_tokens', 0)
+                    self.token_tracker.add_completion_tokens(prompt_tokens, completion_tokens)
+                
                 return result['choices'][0]['message']['content'].strip()
         except:
             pass
@@ -1199,11 +1273,194 @@ class IndeedScraperAPI:
         except:
             return None
 
+class LinkedInJobsAPI:
+    """Alternative job source using LinkedIn Jobs API via RapidAPI as fallback."""
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.url = "https://linkedin-jobs-search.p.rapidapi.com/"
+        self.headers = {
+            'X-RapidAPI-Key': api_key,
+            'X-RapidAPI-Host': 'linkedin-jobs-search.p.rapidapi.com',
+            'Content-Type': 'application/json'
+        }
+    
+    def search_jobs(self, query, location="Hong Kong", max_rows=15, job_type="fulltime", country="hk"):
+        """Search jobs from LinkedIn Jobs API."""
+        payload = {
+            "search_terms": query,
+            "location": location,
+            "page": "1"
+        }
+        
+        try:
+            def make_request():
+                return requests.get(self.url, headers=self.headers, params=payload, timeout=60)
+            
+            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+            
+            if response and response.status_code == 200:
+                data = response.json()
+                jobs = []
+                
+                # Parse LinkedIn Jobs API response format
+                if isinstance(data, list):
+                    for job_data in data[:max_rows]:
+                        parsed_job = self._parse_job(job_data)
+                        if parsed_job:
+                            jobs.append(parsed_job)
+                elif isinstance(data, dict) and 'jobs' in data:
+                    for job_data in data['jobs'][:max_rows]:
+                        parsed_job = self._parse_job(job_data)
+                        if parsed_job:
+                            jobs.append(parsed_job)
+                
+                return jobs
+            else:
+                return []
+                
+        except Exception as e:
+            # Silently fail for fallback source
+            return []
+    
+    def _parse_job(self, job_data):
+        """Parse LinkedIn job data into standard format."""
+        try:
+            return {
+                'title': job_data.get('title') or job_data.get('job_title', 'N/A'),
+                'company': job_data.get('company') or job_data.get('company_name', 'N/A'),
+                'location': job_data.get('location') or job_data.get('job_location', 'Hong Kong'),
+                'description': job_data.get('description') or job_data.get('job_description', 'No description')[:50000],
+                'salary': job_data.get('salary', 'Not specified'),
+                'job_type': job_data.get('job_type', 'Full-time'),
+                'url': job_data.get('job_url') or job_data.get('url', '#'),
+                'posted_date': job_data.get('posted_date') or job_data.get('date', 'Recently'),
+                'benefits': job_data.get('benefits', [])[:5],
+                'skills': job_data.get('skills', [])[:10],
+                'company_rating': job_data.get('company_rating', {}).get('rating', 0) if isinstance(job_data.get('company_rating'), dict) else 0,
+                'is_remote': job_data.get('is_remote', False) or job_data.get('remote', False)
+            }
+        except:
+            return None
+
+class MultiSourceJobAggregator:
+    """Aggregates jobs from multiple sources with failover mechanism."""
+    def __init__(self, primary_source, fallback_source=None):
+        self.primary_source = primary_source
+        self.fallback_source = fallback_source
+        self.last_error = None
+    
+    def search_jobs(self, query, location="Hong Kong", max_rows=15, job_type="fulltime", country="hk"):
+        """Search jobs from primary source, fallback to secondary if primary fails."""
+        all_jobs = []
+        sources_used = []
+        
+        # Try primary source
+        try:
+            jobs = self.primary_source.search_jobs(query, location, max_rows, job_type, country)
+            if jobs:
+                all_jobs.extend(jobs)
+                sources_used.append("Indeed")
+        except Exception as e:
+            self.last_error = f"Primary source error: {str(e)}"
+            st.warning(f"⚠️ Primary job source unavailable: {str(e)[:100]}")
+        
+        # Try fallback source if primary failed or returned insufficient results
+        if self.fallback_source and (len(all_jobs) < max_rows // 2):
+            try:
+                fallback_jobs = self.fallback_source.search_jobs(query, location, max_rows - len(all_jobs), job_type, country)
+                if fallback_jobs:
+                    all_jobs.extend(fallback_jobs)
+                    sources_used.append("LinkedIn")
+            except Exception as e:
+                if not self.last_error:
+                    self.last_error = f"Fallback source error: {str(e)}"
+        
+        # Remove duplicates based on title + company
+        seen = set()
+        unique_jobs = []
+        for job in all_jobs:
+            key = (job.get('title', '').lower(), job.get('company', '').lower())
+            if key not in seen:
+                seen.add(key)
+                unique_jobs.append(job)
+        
+        if sources_used:
+            st.info(f"📊 Jobs aggregated from: {', '.join(sources_used)} ({len(unique_jobs)} unique jobs)")
+        
+        return unique_jobs[:max_rows]
+
+class TokenUsageTracker:
+    """Tracks token usage and costs for API calls."""
+    def __init__(self):
+        self.total_tokens = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_embedding_tokens = 0
+        self.cost_usd = 0.0
+        # Pricing (as of 2024, adjust as needed)
+        self.embedding_cost_per_1k = 0.00002  # $0.00002 per 1K tokens for text-embedding-3-small
+        self.gpt4_mini_prompt_cost_per_1k = 0.00015  # $0.00015 per 1K tokens
+        self.gpt4_mini_completion_cost_per_1k = 0.0006  # $0.0006 per 1K tokens
+    
+    def add_embedding_tokens(self, tokens):
+        """Track embedding token usage."""
+        self.total_embedding_tokens += tokens
+        self.total_tokens += tokens
+        self.cost_usd += (tokens / 1000) * self.embedding_cost_per_1k
+    
+    def add_completion_tokens(self, prompt_tokens, completion_tokens):
+        """Track completion token usage."""
+        self.total_prompt_tokens += prompt_tokens
+        self.total_completion_tokens += completion_tokens
+        self.total_tokens += prompt_tokens + completion_tokens
+        self.cost_usd += (prompt_tokens / 1000) * self.gpt4_mini_prompt_cost_per_1k
+        self.cost_usd += (completion_tokens / 1000) * self.gpt4_mini_completion_cost_per_1k
+    
+    def get_summary(self):
+        """Get usage summary."""
+        return {
+            'total_tokens': self.total_tokens,
+            'embedding_tokens': self.total_embedding_tokens,
+            'prompt_tokens': self.total_prompt_tokens,
+            'completion_tokens': self.total_completion_tokens,
+            'estimated_cost_usd': self.cost_usd
+        }
+    
+    def reset(self):
+        """Reset counters."""
+        self.total_tokens = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_embedding_tokens = 0
+        self.cost_usd = 0.0
+
 class SemanticJobSearch:
-    def __init__(self, embedding_generator):
+    def __init__(self, embedding_generator, use_persistent_store=True):
         self.embedding_gen = embedding_generator
         self.job_embeddings = []
         self.jobs = []
+        self.use_persistent_store = use_persistent_store
+        self.chroma_client = None
+        self.collection = None
+        
+        if use_persistent_store:
+            try:
+                # Initialize ChromaDB with persistent storage
+                chroma_db_path = os.path.join(os.getcwd(), ".chroma_db")
+                os.makedirs(chroma_db_path, exist_ok=True)
+                self.chroma_client = chromadb.PersistentClient(path=chroma_db_path)
+                self.collection = self.chroma_client.get_or_create_collection(
+                    name="job_embeddings",
+                    metadata={"hnsw:space": "cosine"}
+                )
+            except Exception as e:
+                st.warning(f"⚠️ Could not initialize persistent vector store: {e}. Using in-memory storage.")
+                self.use_persistent_store = False
+    
+    def _get_job_hash(self, job):
+        """Generate a hash for a job to use as ID."""
+        job_str = f"{job.get('title', '')}_{job.get('company', '')}_{job.get('url', '')}"
+        return hashlib.md5(job_str.encode()).hexdigest()
     
     def index_jobs(self, jobs):
         self.jobs = jobs
@@ -1213,8 +1470,73 @@ class SemanticJobSearch:
         ]
         
         st.info(f"📊 Indexing {len(jobs)} jobs...")
-        self.job_embeddings = self.embedding_gen.get_embeddings_batch(job_texts)
-        st.success(f"✅ Indexed {len(self.job_embeddings)} jobs")
+        
+        # Check if embeddings exist in persistent store
+        if self.use_persistent_store and self.collection:
+            try:
+                # Get existing job IDs
+                existing_ids = set()
+                existing_data = self.collection.get()
+                if existing_data and 'ids' in existing_data:
+                    existing_ids = set(existing_data['ids'])
+                
+                # Generate hashes for current jobs
+                job_hashes = [self._get_job_hash(job) for job in jobs]
+                
+                # Find jobs that need new embeddings
+                jobs_to_embed = []
+                indices_to_embed = []
+                for idx, job_hash in enumerate(job_hashes):
+                    if job_hash not in existing_ids:
+                        jobs_to_embed.append(job_texts[idx])
+                        indices_to_embed.append(idx)
+                
+                if jobs_to_embed:
+                    st.info(f"🔄 Generating embeddings for {len(jobs_to_embed)} new jobs...")
+                    new_embeddings = self.embedding_gen.get_embeddings_batch(jobs_to_embed)
+                    
+                    # Store new embeddings
+                    for i, (idx, emb) in enumerate(zip(indices_to_embed, new_embeddings)):
+                        job_hash = job_hashes[idx]
+                        self.collection.add(
+                            ids=[job_hash],
+                            embeddings=[emb],
+                            documents=[job_texts[idx]],
+                            metadatas=[{"job_index": idx}]
+                        )
+                
+                # Retrieve all embeddings from store
+                all_hashes = [self._get_job_hash(job) for job in jobs]
+                retrieved = self.collection.get(ids=all_hashes, include=['embeddings'])
+                
+                if retrieved and 'embeddings' in retrieved and retrieved['embeddings']:
+                    # Sort embeddings by job order
+                    hash_to_emb = {h: e for h, e in zip(retrieved['ids'], retrieved['embeddings'])}
+                    self.job_embeddings = [hash_to_emb.get(h, None) for h in all_hashes]
+                    # Filter out None values (shouldn't happen, but safety check)
+                    self.job_embeddings = [e for e in self.job_embeddings if e is not None]
+                else:
+                    # Fallback: generate all embeddings
+                    self.job_embeddings = self.embedding_gen.get_embeddings_batch(job_texts)
+                    # Store all embeddings
+                    for idx, (job, job_text, emb) in enumerate(zip(jobs, job_texts, self.job_embeddings)):
+                        job_hash = self._get_job_hash(job)
+                        self.collection.upsert(
+                            ids=[job_hash],
+                            embeddings=[emb],
+                            documents=[job_text],
+                            metadatas=[{"job_index": idx}]
+                        )
+                
+                st.success(f"✅ Indexed {len(self.job_embeddings)} jobs (using persistent store)")
+            except Exception as e:
+                st.warning(f"⚠️ Error using persistent store: {e}. Generating new embeddings...")
+                self.job_embeddings = self.embedding_gen.get_embeddings_batch(job_texts)
+                self.use_persistent_store = False
+        else:
+            # Fallback to in-memory storage
+            self.job_embeddings = self.embedding_gen.get_embeddings_batch(job_texts)
+            st.success(f"✅ Indexed {len(self.job_embeddings)} jobs")
     
     def search(self, query, top_k=10):
         if not self.job_embeddings:
@@ -1266,24 +1588,68 @@ class SemanticJobSearch:
         
         return min(match_score, 1.0), missing_skills[:5]  # Cap at 1.0 and limit missing skills
 
+def is_cache_valid(cache_entry):
+    """Check if cache entry is still valid (not expired)."""
+    if not cache_entry or not isinstance(cache_entry, dict):
+        return False
+    
+    expires_at = cache_entry.get('expires_at')
+    if expires_at is None:
+        # Legacy cache without TTL - consider invalid for safety
+        return False
+    
+    # Handle both datetime objects and string timestamps
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
+        except:
+            return False
+    
+    return datetime.now() < expires_at
+
+def get_token_tracker():
+    """Get or create token usage tracker."""
+    if 'token_tracker' not in st.session_state:
+        st.session_state.token_tracker = TokenUsageTracker()
+    return st.session_state.token_tracker
+
 def get_embedding_generator():
     if st.session_state.embedding_gen is None:
         # Use secrets instead of hardcoded values
         AZURE_OPENAI_API_KEY = st.secrets["AZURE_OPENAI_API_KEY"]
         AZURE_OPENAI_ENDPOINT = st.secrets["AZURE_OPENAI_ENDPOINT"]
-        st.session_state.embedding_gen = APIMEmbeddingGenerator(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)
+        token_tracker = get_token_tracker()
+        st.session_state.embedding_gen = APIMEmbeddingGenerator(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, token_tracker)
     return st.session_state.embedding_gen
 
 def get_job_scraper():
-    # Use secrets instead of hardcoded values
-    RAPIDAPI_KEY = st.secrets["RAPIDAPI_KEY"]
-    return IndeedScraperAPI(RAPIDAPI_KEY)
+    """Get multi-source job aggregator with failover."""
+    if 'job_aggregator' not in st.session_state:
+        # Use secrets instead of hardcoded values
+        RAPIDAPI_KEY = st.secrets.get("RAPIDAPI_KEY", "")
+        
+        # Primary source: Indeed
+        primary_source = IndeedScraperAPI(RAPIDAPI_KEY)
+        
+        # Fallback source: LinkedIn (optional, only if API key is available)
+        fallback_source = None
+        try:
+            # Try to use the same RapidAPI key for LinkedIn (if supported)
+            # In production, you might want a separate key
+            fallback_source = LinkedInJobsAPI(RAPIDAPI_KEY)
+        except:
+            pass  # Fallback source is optional
+        
+        st.session_state.job_aggregator = MultiSourceJobAggregator(primary_source, fallback_source)
+    
+    return st.session_state.job_aggregator
 
 def get_text_generator():
     if st.session_state.text_gen is None:
         AZURE_OPENAI_API_KEY = st.secrets["AZURE_OPENAI_API_KEY"]
         AZURE_OPENAI_ENDPOINT = st.secrets["AZURE_OPENAI_ENDPOINT"]
-        st.session_state.text_gen = AzureOpenAITextGenerator(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)
+        token_tracker = get_token_tracker()
+        st.session_state.text_gen = AzureOpenAITextGenerator(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, token_tracker)
     return st.session_state.text_gen
 
 def extract_salary_from_text(text):
@@ -2269,11 +2635,14 @@ def render_sidebar():
                             st.warning("⚠️ No jobs match your filters. Try adjusting your criteria.")
                             return
                         
+                        # Cache with TTL (24 hours)
+                        cache_ttl_hours = 24
                         st.session_state.jobs_cache = {
                             'jobs': jobs,
                             'count': len(jobs),
-                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            'query': search_query
+                            'timestamp': datetime.now(),
+                            'query': search_query,
+                            'expires_at': datetime.now() + timedelta(hours=cache_ttl_hours)
                         }
                         
                         # Perform semantic matching
@@ -2305,6 +2674,26 @@ def render_sidebar():
                         st.rerun()
                     else:
                         st.error("❌ No jobs found. Please try different filters.")
+        
+        # Token Usage Display
+        st.markdown("---")
+        st.markdown("### 📊 API Usage")
+        token_tracker = get_token_tracker()
+        usage_summary = token_tracker.get_summary()
+        
+        if usage_summary['total_tokens'] > 0:
+            st.metric("Total Tokens", f"{usage_summary['total_tokens']:,}")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption(f"Embeddings: {usage_summary['embedding_tokens']:,}")
+            with col2:
+                st.caption(f"Completions: {usage_summary['prompt_tokens'] + usage_summary['completion_tokens']:,}")
+            st.metric("Estimated Cost", f"${usage_summary['estimated_cost_usd']:.4f}")
+            if st.button("🔄 Reset Counter", use_container_width=True):
+                token_tracker.reset()
+                st.rerun()
+        else:
+            st.caption("No API calls made yet in this session")
 
 def display_market_positioning_profile(matched_jobs, user_profile):
     """Display Market Positioning Profile with 4 key metrics"""
