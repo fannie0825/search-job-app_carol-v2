@@ -1,6 +1,7 @@
 streamlit
 requests
 numpy
+pandas
 scikit-learn
 PyPDF2
 python-docx

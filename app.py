@@ -1660,11 +1660,23 @@ def get_token_tracker():
 
 def get_embedding_generator():
     if st.session_state.embedding_gen is None:
-        # Use secrets instead of hardcoded values
-        AZURE_OPENAI_API_KEY = st.secrets["AZURE_OPENAI_API_KEY"]
-        AZURE_OPENAI_ENDPOINT = st.secrets["AZURE_OPENAI_ENDPOINT"]
-        token_tracker = get_token_tracker()
-        st.session_state.embedding_gen = APIMEmbeddingGenerator(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, token_tracker)
+        try:
+            # Use secrets instead of hardcoded values
+            AZURE_OPENAI_API_KEY = st.secrets.get("AZURE_OPENAI_API_KEY")
+            AZURE_OPENAI_ENDPOINT = st.secrets.get("AZURE_OPENAI_ENDPOINT")
+            
+            if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT:
+                st.error("⚠️ Azure OpenAI credentials are missing. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
+                return None
+            
+            token_tracker = get_token_tracker()
+            st.session_state.embedding_gen = APIMEmbeddingGenerator(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, token_tracker)
+        except KeyError as e:
+            st.error(f"⚠️ Missing required secret: {e}. Please configure your Streamlit secrets.")
+            return None
+        except Exception as e:
+            st.error(f"⚠️ Error initializing embedding generator: {e}")
+            return None
     return st.session_state.embedding_gen
 
 def get_job_scraper():
@@ -1702,10 +1714,22 @@ def get_job_scraper():
 
 def get_text_generator():
     if st.session_state.text_gen is None:
-        AZURE_OPENAI_API_KEY = st.secrets["AZURE_OPENAI_API_KEY"]
-        AZURE_OPENAI_ENDPOINT = st.secrets["AZURE_OPENAI_ENDPOINT"]
-        token_tracker = get_token_tracker()
-        st.session_state.text_gen = AzureOpenAITextGenerator(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, token_tracker)
+        try:
+            AZURE_OPENAI_API_KEY = st.secrets.get("AZURE_OPENAI_API_KEY")
+            AZURE_OPENAI_ENDPOINT = st.secrets.get("AZURE_OPENAI_ENDPOINT")
+            
+            if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT:
+                st.error("⚠️ Azure OpenAI credentials are missing. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
+                return None
+            
+            token_tracker = get_token_tracker()
+            st.session_state.text_gen = AzureOpenAITextGenerator(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, token_tracker)
+        except KeyError as e:
+            st.error(f"⚠️ Missing required secret: {e}. Please configure your Streamlit secrets.")
+            return None
+        except Exception as e:
+            st.error(f"⚠️ Error initializing text generator: {e}")
+            return None
     return st.session_state.text_gen
 
 def extract_salary_from_text(text):
@@ -3683,44 +3707,100 @@ def format_resume_as_text(resume_data):
     
     return '\n'.join(text)
 
+def validate_secrets():
+    """Validate that required secrets are configured. Returns True if valid, False otherwise."""
+    try:
+        required_secrets = ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "RAPIDAPI_KEY"]
+        missing_secrets = []
+        
+        for secret in required_secrets:
+            if not st.secrets.get(secret):
+                missing_secrets.append(secret)
+        
+        if missing_secrets:
+            st.error(f"""
+            ⚠️ **Missing Required Configuration**
+            
+            The following secrets are not configured in your Streamlit app:
+            - {', '.join(missing_secrets)}
+            
+            Please configure these in your Streamlit Cloud secrets or local `.streamlit/secrets.toml` file.
+            See `.streamlit/secrets.toml.example` for the required format.
+            """)
+            return False
+        
+        return True
+    except Exception as e:
+        st.error(f"⚠️ Error validating secrets: {e}")
+        return False
+
 def main():
-    # Check if resume generator should be shown
-    if st.session_state.get('show_resume_generator', False):
-        display_resume_generator()
-        return
-    
-    # Render sidebar with controls
-    render_sidebar()
-    
-    # Main dashboard area - only show after analysis
-    if not st.session_state.get('dashboard_ready', False) or not st.session_state.matched_jobs:
-        # Show empty state
-        st.info("👆 Upload your CV in the sidebar and click 'Analyze Profile & Find Matches' to see your market positioning and ranked opportunities.")
-        return
-    
-    # Display Market Positioning Profile (Top Section)
-    display_market_positioning_profile(
-        st.session_state.matched_jobs,
-        st.session_state.user_profile
-    )
-    
-    # Display Refine Results Section
-    display_refine_results_section(
-        st.session_state.matched_jobs,
-        st.session_state.user_profile
-    )
-    
-    # Display Smart Ranked Matches Table (Middle Section)
-    display_ranked_matches_table(
-        st.session_state.matched_jobs,
-        st.session_state.user_profile
-    )
-    
-    # Display Match Breakdown & Application Copilot (Bottom Section)
-    display_match_breakdown(
-        st.session_state.matched_jobs,
-        st.session_state.user_profile
-    )
+    try:
+        # Check if resume generator should be shown
+        if st.session_state.get('show_resume_generator', False):
+            display_resume_generator()
+            return
+        
+        # Render sidebar with controls
+        render_sidebar()
+        
+        # Main dashboard area - only show after analysis
+        if not st.session_state.get('dashboard_ready', False) or not st.session_state.matched_jobs:
+            # Show empty state
+            st.info("👆 Upload your CV in the sidebar and click 'Analyze Profile & Find Matches' to see your market positioning and ranked opportunities.")
+            return
+        
+        # Display Market Positioning Profile (Top Section)
+        display_market_positioning_profile(
+            st.session_state.matched_jobs,
+            st.session_state.user_profile
+        )
+        
+        # Display Refine Results Section
+        display_refine_results_section(
+            st.session_state.matched_jobs,
+            st.session_state.user_profile
+        )
+        
+        # Display Smart Ranked Matches Table (Middle Section)
+        display_ranked_matches_table(
+            st.session_state.matched_jobs,
+            st.session_state.user_profile
+        )
+        
+        # Display Match Breakdown & Application Copilot (Bottom Section)
+        display_match_breakdown(
+            st.session_state.matched_jobs,
+            st.session_state.user_profile
+        )
+    except Exception as e:
+        st.error(f"""
+        ❌ **Application Error**
+        
+        An unexpected error occurred: {e}
+        
+        Please check:
+        1. All required secrets are configured
+        2. All dependencies are installed
+        3. The application logs for more details
+        """)
+        st.exception(e)
 
 if __name__ == "__main__":
-    main()
+    # Wrap main() in error handling to prevent crashes
+    try:
+        main()
+    except Exception as e:
+        st.error(f"""
+        ❌ **Startup Error**
+        
+        The application failed to start: {e}
+        
+        This is likely due to:
+        1. Missing or incorrect secrets configuration
+        2. Missing dependencies
+        3. A code error in the application
+        
+        Please check your Streamlit Cloud logs for more details.
+        """)
+        st.exception(e)
