@@ -45,8 +45,13 @@ def _get_config_int(key, default, minimum=1):
     return _coerce_positive_int(candidate, default, minimum)
 
 
-DEFAULT_EMBEDDING_BATCH_SIZE = _get_config_int("EMBEDDING_BATCH_SIZE", 50, minimum=10)
+# Reduced default batch size to avoid rate limits (can be overridden via env var)
+DEFAULT_EMBEDDING_BATCH_SIZE = _get_config_int("EMBEDDING_BATCH_SIZE", 20, minimum=5)
 DEFAULT_MAX_JOBS_TO_INDEX = _get_config_int("MAX_JOBS_TO_INDEX", 50, minimum=30)
+# Rate limiting: delay between batches in seconds
+EMBEDDING_BATCH_DELAY = _get_config_int("EMBEDDING_BATCH_DELAY", 1, minimum=0)
+# Rate limiting: delay between individual calls when rate limited
+EMBEDDING_RATE_LIMIT_DELAY = _get_config_int("EMBEDDING_RATE_LIMIT_DELAY", 2, minimum=1)
 
 
 def _determine_index_limit(total_jobs, desired_top_matches):
@@ -829,9 +834,22 @@ class APIMEmbeddingGenerator:
         self.headers = {"api-key": self.api_key, "Content-Type": "application/json"}
         self.token_tracker = token_tracker
         self.encoding = tiktoken.get_encoding("cl100k_base")  # For token counting
+        self.last_request_time = 0  # For rate limiting
+        self.rate_limit_encountered = False  # Track if we've hit rate limits
     
     def get_embedding(self, text):
         try:
+            # Rate limiting: add delay if we've encountered rate limits
+            if self.rate_limit_encountered:
+                time.sleep(EMBEDDING_RATE_LIMIT_DELAY)
+            
+            # Throttle requests to avoid hitting rate limits
+            current_time = time.time()
+            time_since_last = current_time - self.last_request_time
+            min_delay = 0.1  # Minimum 100ms between requests
+            if time_since_last < min_delay:
+                time.sleep(min_delay - time_since_last)
+            
             payload = {"input": text, "model": self.deployment}
             
             # Count tokens for tracking
@@ -842,10 +860,14 @@ class APIMEmbeddingGenerator:
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
             
             response = api_call_with_retry(make_request, max_retries=3)
+            self.last_request_time = time.time()
             
             if response and response.status_code == 200:
                 result = response.json()
                 embedding = result['data'][0]['embedding']
+                
+                # Reset rate limit flag on success
+                self.rate_limit_encountered = False
                 
                 # Track token usage if available in response
                 if self.token_tracker and 'usage' in result:
@@ -856,6 +878,10 @@ class APIMEmbeddingGenerator:
                     self.token_tracker.add_embedding_tokens(tokens)
                 
                 return embedding
+            elif response and response.status_code == 429:
+                # Mark that we've hit rate limits
+                self.rate_limit_encountered = True
+                return None
             
             return None
         except Exception as e:
@@ -868,15 +894,27 @@ class APIMEmbeddingGenerator:
         effective_batch_size = batch_size or DEFAULT_EMBEDDING_BATCH_SIZE
         if effective_batch_size <= 0:
             effective_batch_size = DEFAULT_EMBEDDING_BATCH_SIZE
+        
+        # Reduce batch size if we've hit rate limits
+        if self.rate_limit_encountered:
+            effective_batch_size = max(5, effective_batch_size // 2)
+            st.info(f"⚠️ Rate limit detected. Reducing batch size to {effective_batch_size}.")
+        
         embeddings = []
         progress_bar = st.progress(0)
         status_text = st.empty()
+        total_batches = (len(texts) + effective_batch_size - 1) // effective_batch_size
         
         for i in range(0, len(texts), effective_batch_size):
             batch = texts[i:i + effective_batch_size]
+            batch_num = i // effective_batch_size + 1
             progress = (i + len(batch)) / len(texts)
             progress_bar.progress(progress)
-            status_text.text(f"🔄 Generating embeddings: {i + len(batch)}/{len(texts)}")
+            status_text.text(f"🔄 Generating embeddings: {i + len(batch)}/{len(texts)} (batch {batch_num}/{total_batches})")
+            
+            # Add delay between batches to avoid rate limits (except for first batch)
+            if i > 0 and EMBEDDING_BATCH_DELAY > 0:
+                time.sleep(EMBEDDING_BATCH_DELAY)
             
             try:
                 payload = {"input": batch, "model": self.deployment}
@@ -889,11 +927,15 @@ class APIMEmbeddingGenerator:
                     return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
                 
                 response = api_call_with_retry(make_request, max_retries=3)
+                self.last_request_time = time.time()
                 
                 if response and response.status_code == 200:
                     data = response.json()
                     sorted_data = sorted(data['data'], key=lambda x: x['index'])
                     embeddings.extend([item['embedding'] for item in sorted_data])
+                    
+                    # Reset rate limit flag on success
+                    self.rate_limit_encountered = False
                     
                     # Track token usage if available in response
                     if self.token_tracker and 'usage' in data:
@@ -902,15 +944,27 @@ class APIMEmbeddingGenerator:
                     elif self.token_tracker:
                         # Fallback to estimated token count
                         self.token_tracker.add_embedding_tokens(batch_tokens)
+                elif response and response.status_code == 429:
+                    # Rate limit hit - mark flag and try smaller batches or individual calls
+                    self.rate_limit_encountered = True
+                    st.warning(f"⚠️ Rate limit reached. Processing batch {batch_num} individually with delays...")
+                    # Process this batch individually with delays
+                    for text in batch:
+                        emb = self.get_embedding(text)
+                        if emb:
+                            embeddings.append(emb)
+                        else:
+                            # If individual call also fails, skip this text
+                            st.warning(f"⚠️ Skipping embedding due to rate limit.")
                 else:
-                    # Fallback to individual calls if batch fails
-                    st.warning(f"⚠️ Batch embedding failed, trying individual calls for batch {i//effective_batch_size + 1}...")
+                    # Other error - fallback to individual calls
+                    st.warning(f"⚠️ Batch embedding failed (status {response.status_code if response else 'None'}), trying individual calls for batch {batch_num}...")
                     for text in batch:
                         emb = self.get_embedding(text)
                         if emb:
                             embeddings.append(emb)
             except Exception as e:
-                st.warning(f"⚠️ Error processing batch, trying individual calls: {e}")
+                st.warning(f"⚠️ Error processing batch {batch_num}, trying individual calls: {e}")
                 for text in batch:
                     emb = self.get_embedding(text)
                     if emb:
@@ -1074,8 +1128,13 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks, no additional t
             return None
     
     def calculate_match_score(self, resume_content, job_description, embedding_generator):
-        """Calculate match score between resume and job description, and identify missing keywords"""
+        """Calculate match score between resume and job description, and identify missing keywords.
+        Returns (None, None) if rate limits are encountered to avoid further API calls."""
         try:
+            # Check if we've hit rate limits - return None to avoid more API calls
+            if embedding_generator.rate_limit_encountered:
+                return None, None
+            
             # Create embeddings for resume and job description
             resume_embedding = embedding_generator.get_embedding(resume_content)
             job_embedding = embedding_generator.get_embedding(job_description)
@@ -1700,9 +1759,37 @@ class SemanticJobSearch:
         if not self.job_embeddings:
             return []
         
-        query_embedding = self.embedding_gen.get_embedding(query)
-        if not query_embedding:
-            return []
+        # Cache query embeddings in vector store to avoid redundant API calls
+        query_embedding = None
+        query_hash = hashlib.md5(query.encode()).hexdigest()
+        query_id = f"query_{query_hash}"
+        
+        if self.use_persistent_store and self.collection:
+            try:
+                # Try to retrieve cached query embedding
+                cached = self.collection.get(ids=[query_id], include=['embeddings'])
+                if cached and 'embeddings' in cached and cached['embeddings'] and len(cached['embeddings']) > 0:
+                    query_embedding = cached['embeddings'][0]
+            except Exception:
+                pass  # If retrieval fails, generate new embedding
+        
+        # Generate new embedding if not cached
+        if query_embedding is None:
+            query_embedding = self.embedding_gen.get_embedding(query)
+            if not query_embedding:
+                return []
+            
+            # Cache the query embedding
+            if self.use_persistent_store and self.collection:
+                try:
+                    self.collection.upsert(
+                        ids=[query_id],
+                        embeddings=[query_embedding],
+                        documents=[query],
+                        metadatas=[{"type": "query", "timestamp": datetime.now().isoformat()}]
+                    )
+                except Exception:
+                    pass  # If caching fails, continue without caching
         
         query_emb = np.array(query_embedding).reshape(1, -1)
         job_embs = np.array(self.job_embeddings)
@@ -1721,7 +1808,8 @@ class SemanticJobSearch:
         return results
     
     def calculate_skill_match(self, user_skills, job_skills):
-        """Calculate skill-based match score using semantic similarity (embeddings)"""
+        """Calculate skill-based match score using semantic similarity (embeddings)
+        Falls back to string-based matching if rate limits are encountered."""
         if not user_skills or not job_skills:
             return 0.0, []
         
@@ -1732,10 +1820,14 @@ class SemanticJobSearch:
         if not user_skills_list or not job_skills_list:
             return 0.0, []
         
+        # Check if we've hit rate limits - use string matching to avoid more API calls
+        if self.embedding_gen.rate_limit_encountered:
+            return self._calculate_skill_match_string_based(user_skills_list, job_skills_list)
+        
         try:
-            # Generate embeddings for all skills
-            user_skill_embeddings = self.embedding_gen.get_embeddings_batch(user_skills_list, batch_size=20)
-            job_skill_embeddings = self.embedding_gen.get_embeddings_batch(job_skills_list, batch_size=20)
+            # Generate embeddings for all skills (use smaller batch size for skills)
+            user_skill_embeddings = self.embedding_gen.get_embeddings_batch(user_skills_list, batch_size=10)
+            job_skill_embeddings = self.embedding_gen.get_embeddings_batch(job_skills_list, batch_size=10)
             
             if not user_skill_embeddings or not job_skill_embeddings:
                 # Fallback to string matching if embeddings fail
