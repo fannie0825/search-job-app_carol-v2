@@ -792,6 +792,8 @@ if 'show_resume_generator' not in st.session_state:
     st.session_state.show_resume_generator = False
 if 'resume_text' not in st.session_state:
     st.session_state.resume_text = None
+if 'resume_embedding' not in st.session_state:
+    st.session_state.resume_embedding = None
 if 'matched_jobs' not in st.session_state:
     st.session_state.matched_jobs = []
 if 'match_score' not in st.session_state:
@@ -1665,6 +1667,7 @@ class SemanticJobSearch:
         return hashlib.md5(job_str.encode()).hexdigest()
     
     def index_jobs(self, jobs, max_jobs_to_index=None):
+        """Simplified job indexing: Check if job exists, if not, embed and store."""
         if not jobs:
             st.warning("⚠️ No jobs available to index.")
             self.jobs = []
@@ -1684,19 +1687,17 @@ class SemanticJobSearch:
         
         st.info(f"📊 Indexing {len(jobs_to_index)} jobs...")
         
-        # Check if embeddings exist in persistent store
+        # Simplified indexing: Check existing, generate missing, retrieve all
         if self.use_persistent_store and self.collection:
             try:
-                # Get existing job IDs
-                existing_ids = set()
-                existing_data = self.collection.get()
-                if existing_data and 'ids' in existing_data:
-                    existing_ids = set(existing_data['ids'])
-                
-                # Generate hashes for current jobs
+                # Generate hashes for all jobs
                 job_hashes = [self._get_job_hash(job) for job in jobs_to_index]
                 
-                # Find jobs that need new embeddings
+                # Check which jobs already exist
+                existing_data = self.collection.get(ids=job_hashes, include=['embeddings'])
+                existing_ids = set(existing_data.get('ids', [])) if existing_data else set()
+                
+                # Find jobs that need embeddings
                 jobs_to_embed = []
                 indices_to_embed = []
                 for idx, job_hash in enumerate(job_hashes):
@@ -1704,89 +1705,68 @@ class SemanticJobSearch:
                         jobs_to_embed.append(job_texts[idx])
                         indices_to_embed.append(idx)
                 
+                # Generate embeddings for new jobs only
                 if jobs_to_embed:
                     st.info(f"🔄 Generating embeddings for {len(jobs_to_embed)} new jobs...")
                     new_embeddings = self.embedding_gen.get_embeddings_batch(jobs_to_embed)
                     
                     # Store new embeddings
                     for idx, emb in zip(indices_to_embed, new_embeddings):
-                        job_hash = job_hashes[idx]
-                        self.collection.add(
-                            ids=[job_hash],
-                            embeddings=[emb],
-                            documents=[job_texts[idx]],
-                            metadatas=[{"job_index": idx}]
-                        )
+                        if emb:  # Only store if embedding was successfully generated
+                            job_hash = job_hashes[idx]
+                            self.collection.upsert(
+                                ids=[job_hash],
+                                embeddings=[emb],
+                                documents=[job_texts[idx]],
+                                metadatas=[{"job_index": idx}]
+                            )
                 
-                # Retrieve all embeddings from store
-                all_hashes = job_hashes
-                retrieved = self.collection.get(ids=all_hashes, include=['embeddings'])
-                
+                # Retrieve all embeddings (existing + newly generated)
+                retrieved = self.collection.get(ids=job_hashes, include=['embeddings'])
                 if retrieved and 'embeddings' in retrieved and retrieved['embeddings']:
-                    # Sort embeddings by job order
+                    # Map hashes to embeddings and maintain job order
                     hash_to_emb = {h: e for h, e in zip(retrieved['ids'], retrieved['embeddings'])}
-                    self.job_embeddings = [hash_to_emb.get(h, None) for h in all_hashes]
-                    # Filter out None values (shouldn't happen, but safety check)
+                    self.job_embeddings = [hash_to_emb.get(h, None) for h in job_hashes]
+                    # Filter out None values
                     self.job_embeddings = [e for e in self.job_embeddings if e is not None]
+                    st.success(f"✅ Indexed {len(self.job_embeddings)} jobs (using persistent store)")
                 else:
-                    # Fallback: generate all embeddings
+                    # Fallback: generate all if retrieval fails
                     self.job_embeddings = self.embedding_gen.get_embeddings_batch(job_texts)
-                    # Store all embeddings
-                    for idx, (job, job_text, emb) in enumerate(zip(jobs_to_index, job_texts, self.job_embeddings)):
-                        job_hash = self._get_job_hash(job)
-                        self.collection.upsert(
-                            ids=[job_hash],
-                            embeddings=[emb],
-                            documents=[job_text],
-                            metadatas=[{"job_index": idx}]
-                        )
-                
-                st.success(f"✅ Indexed {len(self.job_embeddings)} jobs (using persistent store)")
+                    st.success(f"✅ Indexed {len(self.job_embeddings)} jobs")
             except Exception as e:
                 st.warning(f"⚠️ Error using persistent store: {e}. Generating new embeddings...")
                 self.job_embeddings = self.embedding_gen.get_embeddings_batch(job_texts)
                 self.use_persistent_store = False
+                st.success(f"✅ Indexed {len(self.job_embeddings)} jobs")
         else:
             # Fallback to in-memory storage
             self.job_embeddings = self.embedding_gen.get_embeddings_batch(job_texts)
             st.success(f"✅ Indexed {len(self.job_embeddings)} jobs")
     
-    def search(self, query, top_k=10):
+    def search(self, query=None, top_k=10, resume_embedding=None):
+        """Simplified search: Use pre-computed resume embedding if available, otherwise generate from query.
+        
+        Args:
+            query: Optional query string (used if resume_embedding not provided)
+            top_k: Number of top results to return
+            resume_embedding: Pre-computed resume embedding (preferred, avoids API call)
+        """
         if not self.job_embeddings:
             return []
         
-        # Cache query embeddings in vector store to avoid redundant API calls
-        query_embedding = None
-        query_hash = hashlib.md5(query.encode()).hexdigest()
-        query_id = f"query_{query_hash}"
-        
-        if self.use_persistent_store and self.collection:
-            try:
-                # Try to retrieve cached query embedding
-                cached = self.collection.get(ids=[query_id], include=['embeddings'])
-                if cached and 'embeddings' in cached and cached['embeddings'] and len(cached['embeddings']) > 0:
-                    query_embedding = cached['embeddings'][0]
-            except Exception:
-                pass  # If retrieval fails, generate new embedding
-        
-        # Generate new embedding if not cached
-        if query_embedding is None:
+        # Use pre-computed resume embedding if available (simplified - no caching needed)
+        if resume_embedding is not None:
+            query_embedding = resume_embedding
+        elif query:
+            # Fallback: generate embedding from query (for backward compatibility)
             query_embedding = self.embedding_gen.get_embedding(query)
             if not query_embedding:
                 return []
-            
-            # Cache the query embedding
-            if self.use_persistent_store and self.collection:
-                try:
-                    self.collection.upsert(
-                        ids=[query_id],
-                        embeddings=[query_embedding],
-                        documents=[query],
-                        metadatas=[{"type": "query", "timestamp": datetime.now().isoformat()}]
-                    )
-                except Exception:
-                    pass  # If caching fails, continue without caching
+        else:
+            return []
         
+        # Perform semantic similarity search
         query_emb = np.array(query_embedding).reshape(1, -1)
         job_embs = np.array(self.job_embeddings)
         
@@ -2050,6 +2030,35 @@ def get_embedding_generator():
     except Exception as e:
         st.error(f"⚠️ Error initializing embedding generator: {e}")
         return None
+
+def generate_and_store_resume_embedding(resume_text, user_profile=None):
+    """Generate embedding for resume and store in session state.
+    
+    This is called once when resume is uploaded/updated, so we can reuse
+    the embedding for all subsequent searches without regenerating it.
+    """
+    if not resume_text:
+        st.session_state.resume_embedding = None
+        return None
+    
+    # Build resume query text (same logic as before, but we'll store the embedding)
+    if user_profile:
+        profile_data = f"{user_profile.get('summary', '')} {user_profile.get('experience', '')} {user_profile.get('skills', '')}"
+        resume_query = f"{resume_text} {profile_data}"
+    else:
+        resume_query = resume_text
+    
+    # Generate embedding
+    embedding_gen = get_embedding_generator()
+    if not embedding_gen:
+        return None
+    
+    embedding = embedding_gen.get_embedding(resume_query)
+    if embedding:
+        st.session_state.resume_embedding = embedding
+        return embedding
+    
+    return None
 
 def get_job_scraper():
     """Get multi-source job aggregator with failover.
@@ -2626,6 +2635,8 @@ def display_user_profile():
                 if resume_text:
                     # Store resume text for job matching
                     st.session_state.resume_text = resume_text
+                    # Generate and store resume embedding (one-time, reusable for all searches)
+                    generate_and_store_resume_embedding(resume_text)
                     st.success(f"✅ Extracted {len(resume_text)} characters from resume")
                     
                     # Show extracted text preview
@@ -3275,6 +3286,8 @@ def render_sidebar():
                 resume_text = extract_text_from_resume(uploaded_file)
                 if resume_text:
                     st.session_state.resume_text = resume_text
+                    # Generate and store resume embedding (one-time, reusable for all searches)
+                    generate_and_store_resume_embedding(resume_text)
                     
                     # Extract structured information
                     with st.spinner("🤖 Extracting profile data..."):
@@ -3444,16 +3457,27 @@ Return ONLY valid JSON."""
                         search_engine = SemanticJobSearch(embedding_gen)
                         search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
                         
-                        # Build query from resume/profile
-                        if st.session_state.resume_text:
-                            resume_query = st.session_state.resume_text
-                            if st.session_state.user_profile.get('summary'):
-                                profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
-                                resume_query = f"{resume_query} {profile_data}"
-                        else:
-                            resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
+                        # Use pre-computed resume embedding if available (simplified - no query string needed)
+                        resume_embedding = st.session_state.get('resume_embedding')
+                        if not resume_embedding and st.session_state.resume_text:
+                            # Generate embedding if it doesn't exist yet
+                            resume_embedding = generate_and_store_resume_embedding(
+                                st.session_state.resume_text,
+                                st.session_state.user_profile if st.session_state.user_profile else None
+                            )
                         
-                        results = search_engine.search(resume_query, top_k=top_match_count)
+                        # Fallback: build query string if no resume embedding available
+                        resume_query = None
+                        if not resume_embedding:
+                            if st.session_state.resume_text:
+                                resume_query = st.session_state.resume_text
+                                if st.session_state.user_profile.get('summary'):
+                                    profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
+                                    resume_query = f"{resume_query} {profile_data}"
+                            else:
+                                resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
+                        
+                        results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
                         
                         if results:
                             # Calculate skill matches
@@ -3668,16 +3692,27 @@ def display_refine_results_section(matched_jobs, user_profile):
                     search_engine = SemanticJobSearch(embedding_gen)
                     search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
                     
-                    # Build query from resume/profile
-                    if st.session_state.resume_text:
-                        resume_query = st.session_state.resume_text
-                        if st.session_state.user_profile.get('summary'):
-                            profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
-                            resume_query = f"{resume_query} {profile_data}"
-                    else:
-                        resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
+                    # Use pre-computed resume embedding if available (simplified - no query string needed)
+                    resume_embedding = st.session_state.get('resume_embedding')
+                    if not resume_embedding and st.session_state.resume_text:
+                        # Generate embedding if it doesn't exist yet
+                        resume_embedding = generate_and_store_resume_embedding(
+                            st.session_state.resume_text,
+                            st.session_state.user_profile if st.session_state.user_profile else None
+                        )
                     
-                    results = search_engine.search(resume_query, top_k=top_match_count)
+                    # Fallback: build query string if no resume embedding available
+                    resume_query = None
+                    if not resume_embedding:
+                        if st.session_state.resume_text:
+                            resume_query = st.session_state.resume_text
+                            if st.session_state.user_profile.get('summary'):
+                                profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
+                                resume_query = f"{resume_query} {profile_data}"
+                        else:
+                            resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
+                    
+                    results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
                     
                     # Calculate skill matches
                     user_skills = st.session_state.user_profile.get('skills', '')
