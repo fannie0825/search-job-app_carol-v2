@@ -782,14 +782,10 @@ if 'search_history' not in st.session_state:
     st.session_state.search_history = []
 if 'jobs_cache' not in st.session_state:
     st.session_state.jobs_cache = {}
-if 'embedding_gen' not in st.session_state:
-    st.session_state.embedding_gen = None
 if 'user_profile' not in st.session_state:
     st.session_state.user_profile = {}
 if 'generated_resume' not in st.session_state:
     st.session_state.generated_resume = None
-if 'text_gen' not in st.session_state:
-    st.session_state.text_gen = None
 if 'selected_job' not in st.session_state:
     st.session_state.selected_job = None
 if 'show_resume_generator' not in st.session_state:
@@ -2027,29 +2023,33 @@ def _create_text_generator_resource(api_key, endpoint):
     return AzureOpenAITextGenerator(api_key, endpoint)
 
 def get_embedding_generator():
-    if st.session_state.embedding_gen is None:
-        try:
-            # Use secrets instead of hardcoded values
-            AZURE_OPENAI_API_KEY = st.secrets.get("AZURE_OPENAI_API_KEY")
-            AZURE_OPENAI_ENDPOINT = st.secrets.get("AZURE_OPENAI_ENDPOINT")
-            
-            if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT:
-                st.error("⚠️ Azure OpenAI credentials are missing. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
-                return None
-            
-            token_tracker = get_token_tracker()
-            generator = _create_embedding_generator_resource(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)
-            generator.token_tracker = token_tracker
-            st.session_state.embedding_gen = generator
-        except KeyError as e:
-            st.error(f"⚠️ Missing required secret: {e}. Please configure your Streamlit secrets.")
+    """Get cached embedding generator instance.
+    
+    Uses @st.cache_resource to ensure the API client is created only once
+    across the entire app lifespan, preventing unnecessary API calls.
+    """
+    try:
+        # Use secrets instead of hardcoded values
+        AZURE_OPENAI_API_KEY = st.secrets.get("AZURE_OPENAI_API_KEY")
+        AZURE_OPENAI_ENDPOINT = st.secrets.get("AZURE_OPENAI_ENDPOINT")
+        
+        if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT:
+            st.error("⚠️ Azure OpenAI credentials are missing. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
             return None
-        except Exception as e:
-            st.error(f"⚠️ Error initializing embedding generator: {e}")
-            return None
-    else:
-        st.session_state.embedding_gen.token_tracker = get_token_tracker()
-    return st.session_state.embedding_gen
+        
+        # Get cached generator instance (created only once via @st.cache_resource)
+        generator = _create_embedding_generator_resource(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)
+        
+        # Update token tracker reference (token_tracker itself is in session_state)
+        generator.token_tracker = get_token_tracker()
+        
+        return generator
+    except KeyError as e:
+        st.error(f"⚠️ Missing required secret: {e}. Please configure your Streamlit secrets.")
+        return None
+    except Exception as e:
+        st.error(f"⚠️ Error initializing embedding generator: {e}")
+        return None
 
 def get_job_scraper():
     """Get multi-source job aggregator with failover.
@@ -2085,28 +2085,32 @@ def get_job_scraper():
     return st.session_state.job_aggregator
 
 def get_text_generator():
-    if st.session_state.text_gen is None:
-        try:
-            AZURE_OPENAI_API_KEY = st.secrets.get("AZURE_OPENAI_API_KEY")
-            AZURE_OPENAI_ENDPOINT = st.secrets.get("AZURE_OPENAI_ENDPOINT")
-            
-            if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT:
-                st.error("⚠️ Azure OpenAI credentials are missing. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
-                return None
-            
-            token_tracker = get_token_tracker()
-            generator = _create_text_generator_resource(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)
-            generator.token_tracker = token_tracker
-            st.session_state.text_gen = generator
-        except KeyError as e:
-            st.error(f"⚠️ Missing required secret: {e}. Please configure your Streamlit secrets.")
+    """Get cached text generator instance.
+    
+    Uses @st.cache_resource to ensure the API client is created only once
+    across the entire app lifespan, preventing unnecessary API calls.
+    """
+    try:
+        AZURE_OPENAI_API_KEY = st.secrets.get("AZURE_OPENAI_API_KEY")
+        AZURE_OPENAI_ENDPOINT = st.secrets.get("AZURE_OPENAI_ENDPOINT")
+        
+        if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT:
+            st.error("⚠️ Azure OpenAI credentials are missing. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
             return None
-        except Exception as e:
-            st.error(f"⚠️ Error initializing text generator: {e}")
-            return None
-    else:
-        st.session_state.text_gen.token_tracker = get_token_tracker()
-    return st.session_state.text_gen
+        
+        # Get cached generator instance (created only once via @st.cache_resource)
+        generator = _create_text_generator_resource(AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)
+        
+        # Update token tracker reference (token_tracker itself is in session_state)
+        generator.token_tracker = get_token_tracker()
+        
+        return generator
+    except KeyError as e:
+        st.error(f"⚠️ Missing required secret: {e}. Please configure your Streamlit secrets.")
+        return None
+    except Exception as e:
+        st.error(f"⚠️ Error initializing text generator: {e}")
+        return None
 
 def extract_salary_from_text(text):
     """Extract salary information from job description text using LLM"""
