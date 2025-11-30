@@ -2452,6 +2452,107 @@ def extract_text_from_resume(uploaded_file):
         st.error(f"Error extracting text from resume: {e}")
         return None
 
+def extract_relevant_resume_sections(resume_text):
+    """Extract only Experience and Education sections from resume text to reduce token usage in Pass 2 verification"""
+    if not resume_text:
+        return ""
+    
+    # Common section headers to look for (case-insensitive)
+    experience_keywords = [
+        r'experience', r'work experience', r'employment', r'employment history',
+        r'professional experience', r'work history', r'career history', r'positions held'
+    ]
+    education_keywords = [
+        r'education', r'academic background', r'academic qualifications',
+        r'educational background', r'qualifications', r'degrees'
+    ]
+    
+    # Split resume into lines for easier parsing
+    lines = resume_text.split('\n')
+    relevant_sections = []
+    current_section = None
+    in_experience = False
+    in_education = False
+    
+    for i, line in enumerate(lines):
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+        
+        # Check if this line is a section header
+        line_lower = line_stripped.lower()
+        
+        # Check for experience section
+        if any(re.search(rf'\b{kw}\b', line_lower) for kw in experience_keywords):
+            if not in_experience:
+                in_experience = True
+                in_education = False
+                if current_section:
+                    relevant_sections.append(current_section)
+                current_section = line + '\n'
+            continue
+        
+        # Check for education section
+        if any(re.search(rf'\b{kw}\b', line_lower) for kw in education_keywords):
+            if not in_education:
+                in_education = True
+                if current_section:
+                    relevant_sections.append(current_section)
+                current_section = line + '\n'
+            continue
+        
+        # Check if we hit another major section (stop collecting)
+        major_sections = [r'summary', r'objective', r'skills', r'certifications', 
+                         r'awards', r'publications', r'projects', r'contact', r'personal']
+        if any(re.search(rf'\b{section}\b', line_lower) for section in major_sections):
+            if in_experience or in_education:
+                if current_section:
+                    relevant_sections.append(current_section)
+                current_section = None
+                in_experience = False
+                in_education = False
+            continue
+        
+        # If we're in a relevant section, add the line
+        if in_experience or in_education:
+            if current_section:
+                current_section += line + '\n'
+    
+    # Add the last section if we're still collecting
+    if current_section and (in_experience or in_education):
+        relevant_sections.append(current_section)
+    
+    # Combine all relevant sections
+    result = '\n'.join(relevant_sections)
+    
+    # If we couldn't extract specific sections, try a simpler approach:
+    # Look for date patterns and company names (common in experience sections)
+    if not result or len(result) < 100:
+        # Fallback: extract text that likely contains experience/education
+        # Look for patterns like dates, job titles, company names
+        date_pattern = r'\b(19|20)\d{2}\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}'
+        # Get context around lines with dates (likely experience/education)
+        result_lines = []
+        for line in lines:
+            if re.search(date_pattern, line, re.IGNORECASE):
+                result_lines.append(line)
+            elif result_lines:  # Add a few lines after dates for context
+                if len([l for l in result_lines[-3:] if l.strip()]) < 3:
+                    result_lines.append(line)
+                else:
+                    break
+        if result_lines:
+            result = '\n'.join(result_lines[:50])  # Limit to 50 lines
+    
+    # Limit the result to a reasonable size (much smaller than 4000 chars)
+    if result:
+        # Limit to approximately 2000 characters (about half of original 4000)
+        # This still provides enough context for verification while reducing tokens
+        return result[:2000] if len(result) > 2000 else result
+    
+    # Final fallback: return empty string (will use Pass 1 data only for verification)
+    return ""
+
 def extract_profile_from_resume(resume_text):
     """Use Azure OpenAI to extract structured profile information from resume text with two-pass self-correction"""
     try:
@@ -2542,10 +2643,22 @@ Important:
                 return None
         
         # SECOND PASS: Self-correction - verify dates and company names
-        prompt_pass2 = f"""You are a resume quality checker. Review the extracted profile data against the original resume text and verify accuracy, especially for dates and company names.
+        # Extract only relevant sections (Experience and Education) to reduce token usage
+        relevant_resume_sections = extract_relevant_resume_sections(resume_text)
+        
+        # Build verification prompt with only relevant sections
+        if relevant_resume_sections:
+            resume_context = f"""RELEVANT RESUME SECTIONS (Experience and Education only):
+{relevant_resume_sections}"""
+        else:
+            # Fallback: if we can't extract sections, use a smaller chunk or just Pass 1 data
+            # This should rarely happen, but provides a safety net
+            resume_context = f"""RELEVANT RESUME SECTIONS (limited):
+{resume_text[:1500]}"""
+        
+        prompt_pass2 = f"""You are a resume quality checker. Review the extracted profile data against the relevant resume sections and verify accuracy, especially for dates and company names.
 
-ORIGINAL RESUME TEXT:
-{resume_text[:4000]}
+{resume_context}
 
 EXTRACTED PROFILE DATA (from first pass):
 {json.dumps(profile_data_pass1, indent=2)}
