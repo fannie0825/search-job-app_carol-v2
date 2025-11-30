@@ -45,12 +45,37 @@ def _get_config_int(key, default, minimum=1):
     return _coerce_positive_int(candidate, default, minimum)
 
 
+def _coerce_positive_float(value, default, minimum=0.0):
+    """Ensure configuration values are positive floats."""
+    try:
+        if value is None:
+            raise ValueError
+        coerced = float(value)
+        return max(minimum, coerced)
+    except (ValueError, TypeError):
+        return default
+
+
+def _get_config_float(key, default, minimum=0.0):
+    """Look up float configuration values from Streamlit secrets or environment."""
+    try:
+        secrets_value = st.secrets.get(key)
+    except Exception:
+        secrets_value = None
+    env_value = os.getenv(key)
+    candidate = secrets_value if secrets_value not in (None, "") else env_value
+    return _coerce_positive_float(candidate, default, minimum)
+
+
 # Reduced default batch size to avoid rate limits (can be overridden via env var)
 DEFAULT_EMBEDDING_BATCH_SIZE = _get_config_int("EMBEDDING_BATCH_SIZE", 20, minimum=5)
 DEFAULT_MAX_JOBS_TO_INDEX = _get_config_int("MAX_JOBS_TO_INDEX", 50, minimum=30)
 # Rate limiting: delay between batches in seconds (gentle spacing between successful batches)
 # Note: api_call_with_retry() handles 429 errors with exponential backoff automatically
-EMBEDDING_BATCH_DELAY = _get_config_int("EMBEDDING_BATCH_DELAY", 1, minimum=0)
+# Increased default delay to 2 seconds to reduce rate limit risk
+EMBEDDING_BATCH_DELAY = _get_config_int("EMBEDDING_BATCH_DELAY", 2, minimum=0)
+# Delay between sequential API calls to prevent rapid bursts (can be fractional seconds)
+API_CALL_DELAY = _get_config_float("API_CALL_DELAY", 0.5, minimum=0.0)
 
 
 def _determine_index_limit(total_jobs, desired_top_matches):
@@ -169,14 +194,14 @@ def _calculate_exponential_delay(initial_delay, attempt, max_delay):
     return max(1, min(initial_delay * (2 ** attempt), max_delay))
 
 
-def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
+def api_call_with_retry(func, max_retries=3, initial_delay=2, max_delay=60):
     """
     Execute an API call with exponential backoff retry logic for rate limit errors (429).
     
     Args:
         func: Function that makes the API call and returns a requests.Response object
         max_retries: Maximum number of retry attempts
-        initial_delay: Initial delay in seconds before first retry
+        initial_delay: Initial delay in seconds before first retry (default: 2)
         max_delay: Maximum delay in seconds between retries
     
     Returns:
@@ -188,6 +213,9 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
             
             # Success case
             if response.status_code in [200, 201]:
+                # Add small delay after successful calls to prevent rapid bursts
+                if API_CALL_DELAY > 0 and attempt == 0:  # Only on first successful attempt
+                    time.sleep(API_CALL_DELAY)
                 return response
             
             # Rate limit error (429) - retry with exponential backoff
@@ -932,8 +960,11 @@ class APIMEmbeddingGenerator:
                 elif response and response.status_code == 429:
                     # Rate limit hit - api_call_with_retry already handled retries with backoff
                     # Fallback to individual calls (which will also use exponential backoff)
-                    st.warning(f"⚠️ Rate limit reached. Processing batch {batch_num} individually...")
-                    for text in batch:
+                    st.warning(f"⚠️ Rate limit reached. Processing batch {batch_num} individually with delays...")
+                    for idx, text in enumerate(batch):
+                        # Add delay between individual calls to prevent further rate limits
+                        if idx > 0 and API_CALL_DELAY > 0:
+                            time.sleep(API_CALL_DELAY * 2)  # Longer delay for individual fallback calls
                         emb, tokens = self.get_embedding(text)
                         if emb:
                             embeddings.append(emb)
@@ -943,14 +974,20 @@ class APIMEmbeddingGenerator:
                 else:
                     # Other error - fallback to individual calls
                     st.warning(f"⚠️ Batch embedding failed (status {response.status_code if response else 'None'}), trying individual calls for batch {batch_num}...")
-                    for text in batch:
+                    for idx, text in enumerate(batch):
+                        # Add delay between individual calls to prevent rate limits
+                        if idx > 0 and API_CALL_DELAY > 0:
+                            time.sleep(API_CALL_DELAY)
                         emb, tokens = self.get_embedding(text)
                         if emb:
                             embeddings.append(emb)
                             total_tokens_used += tokens
             except Exception as e:
                 st.warning(f"⚠️ Error processing batch {batch_num}, trying individual calls: {e}")
-                for text in batch:
+                for idx, text in enumerate(batch):
+                    # Add delay between individual calls to prevent rate limits
+                    if idx > 0 and API_CALL_DELAY > 0:
+                        time.sleep(API_CALL_DELAY)
                     emb, tokens = self.get_embedding(text)
                     if emb:
                         embeddings.append(emb)
@@ -1806,6 +1843,11 @@ class SemanticJobSearch:
         try:
             # Generate embeddings for all skills (use smaller batch size for skills)
             user_skill_embeddings, user_tokens = self.embedding_gen.get_embeddings_batch(user_skills_list, batch_size=10)
+            
+            # Add delay between sequential batch calls to prevent rate limits
+            if API_CALL_DELAY > 0:
+                time.sleep(API_CALL_DELAY)
+            
             job_skill_embeddings, job_tokens = self.embedding_gen.get_embeddings_batch(job_skills_list, batch_size=10)
             
             # Update token tracker if available
@@ -2612,6 +2654,10 @@ Important:
             )
         
         response_pass1 = api_call_with_retry(make_request_pass1, max_retries=3)
+        
+        # Add delay between sequential API calls (pass1 and pass2)
+        if response_pass1 and response_pass1.status_code == 200 and API_CALL_DELAY > 0:
+            time.sleep(API_CALL_DELAY)
         
         if not response_pass1 or response_pass1.status_code != 200:
             if response_pass1 and response_pass1.status_code == 429:
