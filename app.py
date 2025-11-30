@@ -51,6 +51,8 @@ DEFAULT_MAX_JOBS_TO_INDEX = _get_config_int("MAX_JOBS_TO_INDEX", 50, minimum=30)
 # Rate limiting: delay between batches in seconds (gentle spacing between successful batches)
 # Note: api_call_with_retry() handles 429 errors with exponential backoff automatically
 EMBEDDING_BATCH_DELAY = _get_config_int("EMBEDDING_BATCH_DELAY", 1, minimum=0)
+# RapidAPI rate limiting: max requests per minute (default: 3 for free tier)
+RAPIDAPI_MAX_REQUESTS_PER_MINUTE = _get_config_int("RAPIDAPI_MAX_REQUESTS_PER_MINUTE", 3, minimum=1)
 
 
 def _determine_index_limit(total_jobs, desired_top_matches):
@@ -1377,6 +1379,40 @@ Return ONLY the recruiter note text, no labels or formatting."""
         else:
             return "Consider highlighting more relevant experience from your background to strengthen your application."
 
+class RateLimiter:
+    """Simple rate limiter that enforces requests per minute limit."""
+    def __init__(self, max_requests_per_minute):
+        self.max_requests_per_minute = max_requests_per_minute
+        self.request_times = []
+        self.lock = False  # Simple lock to prevent concurrent modifications
+    
+    def wait_if_needed(self):
+        """Wait if we've exceeded the rate limit, otherwise record the request."""
+        if self.max_requests_per_minute <= 0:
+            return  # No rate limiting
+        
+        now = time.time()
+        one_minute_ago = now - 60
+        
+        # Clean up old requests (older than 1 minute)
+        self.request_times = [t for t in self.request_times if t > one_minute_ago]
+        
+        # If we're at the limit, wait until the oldest request is more than 1 minute old
+        if len(self.request_times) >= self.max_requests_per_minute:
+            oldest_request = min(self.request_times)
+            wait_time = 60 - (now - oldest_request) + 1  # Add 1 second buffer
+            if wait_time > 0:
+                st.info(f"⏳ Rate limiting: Waiting {int(wait_time)} seconds to stay under {self.max_requests_per_minute} requests/minute...")
+                time.sleep(wait_time)
+                # Clean up again after waiting
+                now = time.time()
+                one_minute_ago = now - 60
+                self.request_times = [t for t in self.request_times if t > one_minute_ago]
+        
+        # Record this request
+        self.request_times.append(time.time())
+
+
 class IndeedScraperAPI:
     def __init__(self, api_key):
         self.api_key = api_key
@@ -1386,6 +1422,8 @@ class IndeedScraperAPI:
             'x-rapidapi-host': 'indeed-scraper-api.p.rapidapi.com',
             'x-rapidapi-key': api_key
         }
+        # Initialize rate limiter
+        self.rate_limiter = RateLimiter(RAPIDAPI_MAX_REQUESTS_PER_MINUTE)
     
     def search_jobs(self, query, location="Hong Kong", max_rows=15, job_type="fulltime", country="hk"):
         payload = {
@@ -1402,6 +1440,9 @@ class IndeedScraperAPI:
         }
         
         try:
+            # Enforce rate limiting before making the request
+            self.rate_limiter.wait_if_needed()
+            
             def make_request():
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=60)
             
@@ -1476,6 +1517,8 @@ class LinkedInJobsAPI:
             'X-RapidAPI-Host': 'linkedin-jobs-search.p.rapidapi.com',
             'Content-Type': 'application/json'
         }
+        # Initialize rate limiter (shares the same limit as Indeed API)
+        self.rate_limiter = RateLimiter(RAPIDAPI_MAX_REQUESTS_PER_MINUTE)
     
     def search_jobs(self, query, location="Hong Kong", max_rows=15, job_type="fulltime", country="hk"):
         """Search jobs from LinkedIn Jobs API."""
@@ -1486,6 +1529,9 @@ class LinkedInJobsAPI:
         }
         
         try:
+            # Enforce rate limiting before making the request
+            self.rate_limiter.wait_if_needed()
+            
             def make_request():
                 return requests.get(self.url, headers=self.headers, params=payload, timeout=60)
             
