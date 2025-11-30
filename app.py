@@ -236,7 +236,9 @@ class RequestQueue:
     def __init__(self):
         self.lock = threading.Lock()
         self.last_request_time = 0
-        self.min_request_interval = 1.0  # Minimum seconds between requests
+        # For free tier: 6 seconds between requests = ~10 requests/minute max
+        # This provides extra safety margin for free tier limits
+        self.min_request_interval = 6.0  # Minimum seconds between requests (free tier safe)
     
     def enqueue(self, func, *args, **kwargs):
         """
@@ -268,11 +270,11 @@ class RequestQueue:
 
 
 # Global rate limiter and queue for RapidAPI
-# Conservative defaults: 10 requests per minute (adjustable via config)
+# Optimized for FREE TIER: 5 requests per minute (very conservative to avoid 429 errors)
 # 
 # Configuration:
 # - Set RAPIDAPI_MAX_REQUESTS_PER_MINUTE in environment or Streamlit secrets
-#   to adjust the rate limit (default: 10 requests/minute)
+#   to adjust the rate limit (default: 5 requests/minute for free tier)
 # - Lower values = more conservative, fewer 429 errors
 # - Higher values = faster, but may hit rate limits if your RapidAPI tier is low
 _rapidapi_rate_limiter = None
@@ -282,19 +284,20 @@ def _get_rapidapi_rate_limiter():
     """Get or create the global RapidAPI rate limiter.
     
     Rate limiter prevents hitting RapidAPI rate limits by tracking requests
-    per time window. Default: 10 requests per minute (conservative).
+    per time window. Default: 5 requests per minute (optimized for free tier).
     
     Configure via RAPIDAPI_MAX_REQUESTS_PER_MINUTE in environment/secrets.
     """
     global _rapidapi_rate_limiter
     if _rapidapi_rate_limiter is None:
         # Configurable via environment/secrets
-        # Default: 10 requests per minute (conservative to avoid 429 errors)
+        # Default: 5 requests per minute (optimized for FREE TIER to avoid 429 errors)
+        # Free tier typically allows 100-500 requests/month, so we're very conservative
         # Adjust based on your RapidAPI subscription tier:
-        # - Free tier: 5-10 requests/minute
-        # - Basic tier: 10-20 requests/minute
+        # - Free tier: 5 requests/minute (default) - very conservative
+        # - Basic tier: 10-15 requests/minute
         # - Pro tier: 20-50 requests/minute
-        max_requests = _get_config_int("RAPIDAPI_MAX_REQUESTS_PER_MINUTE", 10, minimum=1)
+        max_requests = _get_config_int("RAPIDAPI_MAX_REQUESTS_PER_MINUTE", 5, minimum=1)
         _rapidapi_rate_limiter = RateLimiter(max_requests=max_requests, window_seconds=60)
     return _rapidapi_rate_limiter
 
@@ -401,26 +404,27 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
     return None
 
 
-def rapidapi_call_with_rate_limit(func, max_retries=5, initial_delay=5, max_delay=300):
+def rapidapi_call_with_rate_limit(func, max_retries=5, initial_delay=10, max_delay=300):
     """
     Execute a RapidAPI call with enhanced rate limiting, queuing, and retry logic.
+    Optimized for FREE TIER with more conservative delays.
     
     This function:
-    1. Uses rate limiter to prevent hitting limits
-    2. Queues requests to prevent concurrent calls
-    3. Uses enhanced retry logic with longer delays for RapidAPI
+    1. Uses rate limiter to prevent hitting limits (5 requests/minute for free tier)
+    2. Queues requests to prevent concurrent calls (6 second minimum interval)
+    3. Uses enhanced retry logic with longer delays for RapidAPI free tier
     
     Args:
         func: Function that makes the API call and returns a requests.Response object
         max_retries: Maximum number of retry attempts (increased for RapidAPI)
-        initial_delay: Initial delay in seconds (longer for RapidAPI, default: 5)
+        initial_delay: Initial delay in seconds (longer for free tier, default: 10)
         max_delay: Maximum delay in seconds (longer for RapidAPI, default: 300 = 5 minutes)
     
     Returns:
         Response object if successful, None otherwise
     """
     def _make_request():
-        # Acquire rate limiter permission
+        # Acquire rate limiter permission (waits if at limit)
         rate_limiter = _get_rapidapi_rate_limiter()
         rate_limiter.acquire(wait=True)
         
@@ -432,7 +436,7 @@ def rapidapi_call_with_rate_limit(func, max_retries=5, initial_delay=5, max_dela
             max_delay=max_delay
         )
     
-    # Queue the request to prevent concurrent calls
+    # Queue the request to prevent concurrent calls (ensures 6 second minimum interval)
     request_queue = _get_rapidapi_request_queue()
     return request_queue.enqueue(_make_request)
 
@@ -1592,11 +1596,11 @@ class IndeedScraperAPI:
             def make_request():
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=60)
             
-            # Use enhanced RapidAPI rate limiting with queuing
+            # Use enhanced RapidAPI rate limiting with queuing (optimized for free tier)
             response = rapidapi_call_with_rate_limit(
                 make_request, 
                 max_retries=5,  # More retries for RapidAPI
-                initial_delay=5,  # Longer initial delay
+                initial_delay=10,  # Longer initial delay for free tier (10 seconds)
                 max_delay=300  # Up to 5 minutes max delay
             )
             
@@ -1686,11 +1690,11 @@ class LinkedInJobsAPI:
             def make_request():
                 return requests.get(self.url, headers=self.headers, params=payload, timeout=60)
             
-            # Use enhanced RapidAPI rate limiting with queuing
+            # Use enhanced RapidAPI rate limiting with queuing (optimized for free tier)
             response = rapidapi_call_with_rate_limit(
                 make_request, 
                 max_retries=5,  # More retries for RapidAPI
-                initial_delay=5,  # Longer initial delay
+                initial_delay=10,  # Longer initial delay for free tier (10 seconds)
                 max_delay=300  # Up to 5 minutes max delay
             )
             
