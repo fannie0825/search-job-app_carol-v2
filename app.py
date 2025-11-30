@@ -21,6 +21,9 @@ import chromadb
 from chromadb.config import Settings
 import tiktoken
 import hashlib
+import threading
+import random
+from collections import deque
 
 
 def _coerce_positive_int(value, default, minimum=1):
@@ -169,6 +172,150 @@ def _calculate_exponential_delay(initial_delay, attempt, max_delay):
     return max(1, min(initial_delay * (2 ** attempt), max_delay))
 
 
+class RateLimiter:
+    """
+    Rate limiter to track and throttle RapidAPI requests.
+    Prevents hitting rate limits by tracking requests per time window.
+    """
+    def __init__(self, max_requests=10, window_seconds=60):
+        """
+        Args:
+            max_requests: Maximum number of requests allowed in the time window
+            window_seconds: Time window in seconds (default: 60 seconds = 1 minute)
+        """
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.request_times = deque()
+        self.lock = threading.Lock()
+    
+    def acquire(self, wait=True):
+        """
+        Try to acquire permission to make a request.
+        
+        Args:
+            wait: If True, wait until a slot is available. If False, return immediately.
+        
+        Returns:
+            True if permission granted, False if not (only when wait=False)
+        """
+        with self.lock:
+            now = time.time()
+            # Remove requests outside the time window
+            while self.request_times and (now - self.request_times[0]) > self.window_seconds:
+                self.request_times.popleft()
+            
+            # Check if we're at the limit
+            if len(self.request_times) >= self.max_requests:
+                if not wait:
+                    return False
+                # Calculate wait time until oldest request expires
+                oldest_time = self.request_times[0]
+                wait_seconds = self.window_seconds - (now - oldest_time) + 0.1  # Add small buffer
+                if wait_seconds > 0:
+                    time.sleep(wait_seconds)
+                    # Retry after waiting
+                    return self.acquire(wait=True)
+            
+            # Add current request time
+            self.request_times.append(now)
+            return True
+    
+    def reset(self):
+        """Reset the rate limiter (clear all request history)."""
+        with self.lock:
+            self.request_times.clear()
+
+
+class RequestQueue:
+    """
+    Request queue to serialize RapidAPI calls and prevent concurrent requests.
+    Ensures only one RapidAPI request is processed at a time.
+    
+    Note: This is a simplified synchronous queue for Streamlit's execution model.
+    """
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.last_request_time = 0
+        self.min_request_interval = 1.0  # Minimum seconds between requests
+    
+    def enqueue(self, func, *args, **kwargs):
+        """
+        Execute a request with rate limiting to prevent concurrent/rapid requests.
+        
+        Args:
+            func: Function to execute
+            *args, **kwargs: Arguments to pass to the function
+        
+        Returns:
+            Result from the function
+        """
+        with self.lock:
+            # Ensure minimum interval between requests
+            now = time.time()
+            time_since_last = now - self.last_request_time
+            if time_since_last < self.min_request_interval:
+                wait_time = self.min_request_interval - time_since_last
+                time.sleep(wait_time)
+            
+            # Execute the request
+            try:
+                result = func(*args, **kwargs)
+                self.last_request_time = time.time()
+                return result
+            except Exception as e:
+                self.last_request_time = time.time()
+                raise
+
+
+# Global rate limiter and queue for RapidAPI
+# Conservative defaults: 10 requests per minute (adjustable via config)
+# 
+# Configuration:
+# - Set RAPIDAPI_MAX_REQUESTS_PER_MINUTE in environment or Streamlit secrets
+#   to adjust the rate limit (default: 10 requests/minute)
+# - Lower values = more conservative, fewer 429 errors
+# - Higher values = faster, but may hit rate limits if your RapidAPI tier is low
+_rapidapi_rate_limiter = None
+_rapidapi_request_queue = None
+
+def _get_rapidapi_rate_limiter():
+    """Get or create the global RapidAPI rate limiter.
+    
+    Rate limiter prevents hitting RapidAPI rate limits by tracking requests
+    per time window. Default: 10 requests per minute (conservative).
+    
+    Configure via RAPIDAPI_MAX_REQUESTS_PER_MINUTE in environment/secrets.
+    """
+    global _rapidapi_rate_limiter
+    if _rapidapi_rate_limiter is None:
+        # Configurable via environment/secrets
+        # Default: 10 requests per minute (conservative to avoid 429 errors)
+        # Adjust based on your RapidAPI subscription tier:
+        # - Free tier: 5-10 requests/minute
+        # - Basic tier: 10-20 requests/minute
+        # - Pro tier: 20-50 requests/minute
+        max_requests = _get_config_int("RAPIDAPI_MAX_REQUESTS_PER_MINUTE", 10, minimum=1)
+        _rapidapi_rate_limiter = RateLimiter(max_requests=max_requests, window_seconds=60)
+    return _rapidapi_rate_limiter
+
+def _get_rapidapi_request_queue():
+    """Get or create the global RapidAPI request queue.
+    
+    Request queue serializes RapidAPI calls to prevent concurrent requests
+    and ensures minimum interval between requests (1 second by default).
+    """
+    global _rapidapi_request_queue
+    if _rapidapi_request_queue is None:
+        _rapidapi_request_queue = RequestQueue()
+    return _rapidapi_request_queue
+
+
+def _add_jitter(delay, jitter_percent=0.1):
+    """Add random jitter to delay to prevent thundering herd problem."""
+    jitter = delay * jitter_percent * (2 * random.random() - 1)  # ±10% jitter
+    return max(0.1, delay + jitter)
+
+
 def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
     """
     Execute an API call with exponential backoff retry logic for rate limit errors (429).
@@ -195,12 +342,14 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
                 if attempt < max_retries - 1:
                     fallback_delay = _calculate_exponential_delay(initial_delay, attempt, max_delay)
                     delay, delay_source = _determine_retry_delay(response, fallback_delay, max_delay)
+                    # Add jitter to prevent synchronized retries
+                    delay = _add_jitter(delay)
                     source_note = ""
                     if delay_source != "fallback":
                         source_note = f" (server hint: {delay_source})"
                     # Show user-friendly message
                     st.warning(
-                        f"⏳ Rate limit reached. Retrying in {delay} seconds{source_note}... "
+                        f"⏳ Rate limit reached. Retrying in {delay:.1f} seconds{source_note}... "
                         f"(Attempt {attempt + 1}/{max_retries})"
                     )
                     time.sleep(delay)
@@ -225,7 +374,8 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
         except requests.exceptions.Timeout:
             if attempt < max_retries - 1:
                 delay = _calculate_exponential_delay(initial_delay, attempt, max_delay)
-                st.warning(f"⏳ Request timed out. Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                delay = _add_jitter(delay)
+                st.warning(f"⏳ Request timed out. Retrying in {delay:.1f} seconds... (Attempt {attempt + 1}/{max_retries})")
                 time.sleep(delay)
                 continue
             else:
@@ -235,7 +385,8 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
         except requests.exceptions.RequestException as e:
             if attempt < max_retries - 1:
                 delay = _calculate_exponential_delay(initial_delay, attempt, max_delay)
-                st.warning(f"⏳ Network error. Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                delay = _add_jitter(delay)
+                st.warning(f"⏳ Network error. Retrying in {delay:.1f} seconds... (Attempt {attempt + 1}/{max_retries})")
                 time.sleep(delay)
                 continue
             else:
@@ -248,6 +399,42 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
             return None
     
     return None
+
+
+def rapidapi_call_with_rate_limit(func, max_retries=5, initial_delay=5, max_delay=300):
+    """
+    Execute a RapidAPI call with enhanced rate limiting, queuing, and retry logic.
+    
+    This function:
+    1. Uses rate limiter to prevent hitting limits
+    2. Queues requests to prevent concurrent calls
+    3. Uses enhanced retry logic with longer delays for RapidAPI
+    
+    Args:
+        func: Function that makes the API call and returns a requests.Response object
+        max_retries: Maximum number of retry attempts (increased for RapidAPI)
+        initial_delay: Initial delay in seconds (longer for RapidAPI, default: 5)
+        max_delay: Maximum delay in seconds (longer for RapidAPI, default: 300 = 5 minutes)
+    
+    Returns:
+        Response object if successful, None otherwise
+    """
+    def _make_request():
+        # Acquire rate limiter permission
+        rate_limiter = _get_rapidapi_rate_limiter()
+        rate_limiter.acquire(wait=True)
+        
+        # Make the actual request with retry logic
+        return api_call_with_retry(
+            func, 
+            max_retries=max_retries, 
+            initial_delay=initial_delay, 
+            max_delay=max_delay
+        )
+    
+    # Queue the request to prevent concurrent calls
+    request_queue = _get_rapidapi_request_queue()
+    return request_queue.enqueue(_make_request)
 
 st.set_page_config(
     page_title="CareerLens - Executive Dashboard",
@@ -1405,7 +1592,13 @@ class IndeedScraperAPI:
             def make_request():
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=60)
             
-            response = api_call_with_retry(make_request, max_retries=3, initial_delay=3)
+            # Use enhanced RapidAPI rate limiting with queuing
+            response = rapidapi_call_with_rate_limit(
+                make_request, 
+                max_retries=5,  # More retries for RapidAPI
+                initial_delay=5,  # Longer initial delay
+                max_delay=300  # Up to 5 minutes max delay
+            )
             
             if response and response.status_code == 201:
                 data = response.json()
@@ -1423,7 +1616,11 @@ class IndeedScraperAPI:
             else:
                 if response:
                     if response.status_code == 429:
-                        st.error("🚫 Rate limit reached for job search API. Please wait a few minutes and try again.")
+                        st.error(
+                            "🚫 Rate limit reached for job search API. "
+                            "The system will automatically retry with backoff. "
+                            "If this persists, please wait a few minutes and try again."
+                        )
                     else:
                         error_detail = response.text[:200] if response.text else "No error details"
                         st.error(f"API Error: {response.status_code} - {error_detail}")
@@ -1489,7 +1686,13 @@ class LinkedInJobsAPI:
             def make_request():
                 return requests.get(self.url, headers=self.headers, params=payload, timeout=60)
             
-            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+            # Use enhanced RapidAPI rate limiting with queuing
+            response = rapidapi_call_with_rate_limit(
+                make_request, 
+                max_retries=5,  # More retries for RapidAPI
+                initial_delay=5,  # Longer initial delay
+                max_delay=300  # Up to 5 minutes max delay
+            )
             
             if response and response.status_code == 200:
                 data = response.json()
