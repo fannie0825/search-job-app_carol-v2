@@ -3,15 +3,53 @@ import React from 'react';
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, errorInfo: null };
   }
 
   static getDerivedStateFromError(error) {
+    // Update state so the next render will show the fallback UI
     return { hasError: true, error };
   }
 
   componentDidCatch(error, errorInfo) {
+    // Log error details for debugging
     console.error('Error caught by boundary:', error, errorInfo);
+    // Store error info in state for display
+    this.setState({
+      errorInfo: errorInfo
+    });
+  }
+
+  getErrorMessage() {
+    const { error } = this.state;
+    if (!error) return 'An unexpected error occurred';
+    
+    // Handle different error types
+    if (error instanceof Error) {
+      return error.message || 'An unexpected error occurred';
+    }
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (error && typeof error === 'object' && 'message' in error) {
+      return String(error.message);
+    }
+    return 'An unexpected error occurred';
+  }
+
+  getErrorStack() {
+    const { error, errorInfo } = this.state;
+    
+    if (error instanceof Error && error.stack) {
+      return error.stack;
+    }
+    if (errorInfo && errorInfo.componentStack) {
+      return errorInfo.componentStack;
+    }
+    if (error && typeof error === 'object' && 'stack' in error) {
+      return String(error.stack);
+    }
+    return 'No stack trace available';
   }
 
   render() {
@@ -23,7 +61,7 @@ class ErrorBoundary extends React.Component {
               Something went wrong
             </h1>
             <p className="text-text-body dark:text-dark-text-secondary mb-4">
-              {this.state.error?.message || 'An unexpected error occurred'}
+              {this.getErrorMessage()}
             </p>
             <button
               onClick={() => window.location.reload()}
@@ -36,7 +74,7 @@ class ErrorBoundary extends React.Component {
                 Error Details
               </summary>
               <pre className="mt-2 text-xs bg-gray-100 dark:bg-dark-bg-main p-2 rounded overflow-auto">
-                {this.state.error?.stack}
+                {this.getErrorStack()}
               </pre>
             </details>
           </div>
