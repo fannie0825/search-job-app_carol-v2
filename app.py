@@ -2474,6 +2474,185 @@ Important:
         st.error(f"Error extracting profile: {e}")
         return None
 
+
+def verify_profile_accuracy(profile_data, resume_text):
+    """Verify and correct profile data against original resume text before generating resume.
+    This is the second pass that ensures accuracy of dates, company names, and job titles."""
+    try:
+        text_gen = get_text_generator()
+        if text_gen is None:
+            return profile_data  # Return original if verification unavailable
+        
+        # Extract relevant sections (Experience and Education) to reduce token usage
+        relevant_sections = _extract_relevant_resume_sections(resume_text)
+        if not relevant_sections:
+            relevant_sections = resume_text[:2000]  # Fallback to first 2000 chars
+        
+        prompt = f"""You are a resume quality checker. Review the extracted profile data against the original resume and verify accuracy, especially for dates, company names, and job titles.
+
+ORIGINAL RESUME SECTIONS:
+{relevant_sections}
+
+EXTRACTED PROFILE DATA:
+{json.dumps(profile_data, indent=2)}
+
+Please review and correct the extracted data, paying special attention to:
+1. **Dates** - Verify all employment dates, education dates, and certification dates are accurate
+2. **Company Names** - Verify all company/organization names are spelled correctly
+3. **Job Titles** - Verify job titles are accurate
+4. **Education Institutions** - Verify institution names are correct
+
+Return the corrected profile data in the same JSON format. If everything is correct, return the data as-is. If corrections are needed, return the corrected version.
+
+Return ONLY valid JSON with this structure:
+{{
+    "name": "Full name",
+    "email": "Email address",
+    "phone": "Phone number",
+    "location": "City, State/Country",
+    "linkedin": "LinkedIn URL if mentioned",
+    "portfolio": "Portfolio/website URL if mentioned",
+    "summary": "Professional summary or objective (2-3 sentences)",
+    "experience": "Work experience in chronological order with job titles, companies, dates, and key achievements (formatted as bullet points)",
+    "education": "Education details including degrees, institutions, and graduation dates",
+    "skills": "Comma-separated list of technical and soft skills",
+    "certifications": "Professional certifications, awards, publications, or other achievements"
+}}
+
+Return ONLY valid JSON, no additional text or markdown."""
+        
+        payload = {
+            "messages": [
+                {"role": "system", "content": "You are a resume quality checker. Verify and correct extracted data, especially dates and company names. Return only valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 2000,
+            "temperature": 0.1,  # Lower temperature for more accurate corrections
+            "response_format": {"type": "json_object"}
+        }
+        
+        def make_request():
+            return requests.post(text_gen.url, headers=text_gen.headers, json=payload, timeout=60)
+        
+        response = api_call_with_retry(make_request, max_retries=2)
+        
+        if response and response.status_code == 200:
+            result = response.json()
+            content = result['choices'][0]['message']['content']
+            
+            # Track token usage
+            if text_gen.token_tracker and 'usage' in result:
+                usage = result['usage']
+                text_gen.token_tracker.add_completion_tokens(
+                    usage.get('prompt_tokens', 0),
+                    usage.get('completion_tokens', 0)
+                )
+            
+            # Parse corrected JSON
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                # Try to extract JSON from response
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group())
+                # If parsing fails, return original
+                return profile_data
+        else:
+            # If verification fails, return original
+            return profile_data
+            
+    except Exception as e:
+        # If verification fails, return original
+        return profile_data
+
+
+def _extract_relevant_resume_sections(resume_text):
+    """Extract Experience and Education sections from resume text to reduce token usage."""
+    if not resume_text:
+        return ""
+    
+    # Common section headers
+    experience_keywords = [
+        r'experience', r'work experience', r'employment', r'employment history',
+        r'professional experience', r'work history'
+    ]
+    education_keywords = [
+        r'education', r'academic background', r'academic qualifications',
+        r'educational background', r'qualifications', r'degrees'
+    ]
+    
+    lines = resume_text.split('\n')
+    relevant_sections = []
+    current_section = None
+    in_experience = False
+    in_education = False
+    
+    for line in lines:
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+        
+        line_lower = line_stripped.lower()
+        
+        # Check for experience section
+        if any(re.search(rf'\b{kw}\b', line_lower) for kw in experience_keywords):
+            if not in_experience:
+                in_experience = True
+                in_education = False
+                if current_section:
+                    relevant_sections.append(current_section)
+                current_section = line + '\n'
+            continue
+        
+        # Check for education section
+        if any(re.search(rf'\b{kw}\b', line_lower) for kw in education_keywords):
+            if not in_education:
+                in_education = True
+                if current_section:
+                    relevant_sections.append(current_section)
+                current_section = line + '\n'
+            continue
+        
+        # Stop at other major sections
+        major_sections = [r'summary', r'objective', r'skills', r'certifications', r'awards']
+        if any(re.search(rf'\b{section}\b', line_lower) for section in major_sections):
+            if in_experience or in_education:
+                if current_section:
+                    relevant_sections.append(current_section)
+                current_section = None
+                in_experience = False
+                in_education = False
+            continue
+        
+        # Add line if in relevant section
+        if in_experience or in_education:
+            if current_section:
+                current_section += line + '\n'
+    
+    # Add last section
+    if current_section and (in_experience or in_education):
+        relevant_sections.append(current_section)
+    
+    result = '\n'.join(relevant_sections)
+    
+    # Fallback: look for date patterns
+    if not result or len(result) < 100:
+        date_pattern = r'\b(19|20)\d{2}\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}'
+        result_lines = []
+        for line in lines:
+            if re.search(date_pattern, line, re.IGNORECASE):
+                result_lines.append(line)
+            elif result_lines and len([l for l in result_lines[-3:] if l.strip()]) < 3:
+                result_lines.append(line)
+            elif result_lines:
+                break
+        if result_lines:
+            result = '\n'.join(result_lines[:50])
+    
+    # Limit size
+    return result[:2000] if result and len(result) > 2000 else result
+
 def display_user_profile():
     """Display and edit user profile"""
     st.header("👤 Your Profile")
@@ -2981,6 +3160,17 @@ def display_resume_generator():
     
     # Generate resume button
     if st.button("🚀 Generate Tailored Resume", type="primary", use_container_width=True):
+        with st.spinner("🤖 Verifying profile accuracy..."):
+            # Second pass: Verify profile accuracy before generating resume
+            raw_resume_text = st.session_state.get('resume_text')
+            if raw_resume_text:
+                verified_profile = verify_profile_accuracy(
+                    st.session_state.user_profile,
+                    raw_resume_text
+                )
+                # Update session state with verified profile
+                st.session_state.user_profile = verified_profile
+        
         with st.spinner("🤖 Creating your personalized resume using AI..."):
             text_gen = get_text_generator()
             if text_gen is None:
