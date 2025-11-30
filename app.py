@@ -10,16 +10,12 @@ import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 import time
 import math
-from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
+from datetime import datetime, timedelta
 import json
 import re
 from io import BytesIO
 import PyPDF2
 from docx import Document
-import chromadb
-from chromadb.config import Settings
-import tiktoken
 import hashlib
 
 
@@ -62,112 +58,23 @@ def _determine_index_limit(total_jobs, desired_top_matches):
     return min(total_jobs, limit)
 
 
-def _parse_retry_after_value(value):
-    """Convert Retry-After style header values into seconds."""
-    if not value:
-        return None
-    value = value.strip()
-    if not value:
-        return None
-    # Try numeric (int or float)
-    try:
-        seconds = float(value)
-        if seconds >= 0:
-            return int(math.ceil(seconds))
-    except (ValueError, TypeError):
-        pass
-    # Try HH:MM:SS format
-    if value.count(':') == 2:
-        try:
-            hours, minutes, seconds = value.split(':')
-            total_seconds = int(hours) * 3600 + int(minutes) * 60 + int(float(seconds))
-            if total_seconds >= 0:
-                return total_seconds
-        except (ValueError, TypeError):
-            pass
-    # Try HTTP-date format
-    try:
-        retry_time = parsedate_to_datetime(value)
-        if retry_time:
-            if retry_time.tzinfo is None:
-                retry_time = retry_time.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
-            delta = (retry_time - now).total_seconds()
-            if delta > 0:
-                return int(math.ceil(delta))
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return None
-
-
-def _extract_delay_from_body(response):
-    """Attempt to read retry hints from JSON/text error bodies."""
-    if response is None:
-        return None
-    message = None
-    try:
-        data = response.json()
-        if isinstance(data, dict):
-            error = data.get('error') or {}
-            if isinstance(error, dict):
-                message = error.get('message') or error.get('code')
-            if not message:
-                message = data.get('message')
-    except (ValueError, json.JSONDecodeError):
-        pass
-    if not message:
-        message = response.text or ""
-    if not message:
-        return None
-    match = re.search(r'after\s+(\d+)\s+seconds?', message, re.IGNORECASE)
-    if match:
-        try:
-            seconds = int(match.group(1))
-            if seconds >= 0:
-                return seconds
-        except ValueError:
-            pass
-    return None
-
-
-def _determine_retry_delay(response, fallback_delay, max_delay):
-    """Use headers/body hints to determine how long to wait before retrying."""
-    if response is not None:
-        headers = response.headers or {}
-        header_candidates = [
-            'Retry-After',
-            'x-ms-retry-after-ms',
-            'x-ms-retry-after',
-            'x-ratelimit-reset-requests',
-            'x-ratelimit-reset-tokens',
-            'x-ratelimit-reset',
-        ]
-        for header in header_candidates:
-            raw_value = headers.get(header)
-            if not raw_value:
-                continue
-            # Headers with milliseconds suffix
-            if header.endswith('-ms'):
-                try:
-                    ms = float(raw_value)
-                    if ms >= 0:
-                        seconds = int(math.ceil(ms / 1000.0))
-                        return max(1, min(seconds, max_delay)), f"header:{header}"
-                except (ValueError, TypeError):
-                    continue
-            else:
-                parsed = _parse_retry_after_value(raw_value)
-                if parsed is not None:
-                    return max(1, min(parsed, max_delay)), f"header:{header}"
-        # Fallback to error body hints
-        body_delay = _extract_delay_from_body(response)
-        if body_delay is not None:
-            return max(1, min(body_delay, max_delay)), "body"
-    return max(1, min(fallback_delay, max_delay)), "fallback"
-
-
-def _calculate_exponential_delay(initial_delay, attempt, max_delay):
-    """Calculate exponential backoff delay for the current retry attempt."""
+def _get_retry_delay(response, attempt, initial_delay=1, max_delay=60):
+    """Get retry delay from response headers or use exponential backoff."""
+    # Try to get Retry-After header (simplified)
+    if response and response.headers:
+        retry_after = response.headers.get('Retry-After') or response.headers.get('x-ms-retry-after-ms')
+        if retry_after:
+            try:
+                # Handle milliseconds
+                if response.headers.get('x-ms-retry-after-ms'):
+                    delay = int(float(retry_after) / 1000)
+                else:
+                    delay = int(float(retry_after))
+                return max(1, min(delay, max_delay))
+            except (ValueError, TypeError):
+                pass
+    
+    # Exponential backoff: 1s, 2s, 4s, 8s...
     return max(1, min(initial_delay * (2 ** attempt), max_delay))
 
 
@@ -192,32 +99,15 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
             if response.status_code in [200, 201]:
                 return response
             
-            # Rate limit error (429) - retry with exponential backoff
+            # Rate limit error (429) - retry with backoff
             elif response.status_code == 429:
                 if attempt < max_retries - 1:
-                    fallback_delay = _calculate_exponential_delay(initial_delay, attempt, max_delay)
-                    delay, delay_source = _determine_retry_delay(response, fallback_delay, max_delay)
-                    source_note = ""
-                    if delay_source != "fallback":
-                        source_note = f" (server hint: {delay_source})"
-                    # Show user-friendly message
-                    st.warning(
-                        f"⏳ Rate limit reached. Retrying in {delay} seconds{source_note}... "
-                        f"(Attempt {attempt + 1}/{max_retries})"
-                    )
+                    delay = _get_retry_delay(response, attempt, initial_delay, max_delay)
+                    st.warning(f"⏳ Rate limit reached. Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
                     time.sleep(delay)
                     continue
                 else:
-                    # Max retries exceeded
-                    error_msg = (
-                        "🚫 **Rate Limit Exceeded**\n\n"
-                        "The API rate limit has been reached. Please:\n"
-                        "1. Wait a few minutes and try again\n"
-                        "2. Reduce the number of jobs you're searching for\n"
-                        "3. Check your API quota/limits\n\n"
-                        f"Status: {response.status_code}"
-                    )
-                    st.error(error_msg)
+                    st.error("🚫 Rate limit exceeded. Please wait a few minutes and try again.")
                     return None
             
             # Other HTTP errors - don't retry
@@ -226,27 +116,26 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
                 
         except requests.exceptions.Timeout:
             if attempt < max_retries - 1:
-                delay = _calculate_exponential_delay(initial_delay, attempt, max_delay)
+                delay = _get_retry_delay(None, attempt, initial_delay, max_delay)
                 st.warning(f"⏳ Request timed out. Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
                 time.sleep(delay)
                 continue
             else:
-                st.error("❌ Request timed out after multiple attempts. Please try again later.")
+                st.error("❌ Request timed out after multiple attempts.")
                 return None
         
         except requests.exceptions.RequestException as e:
             if attempt < max_retries - 1:
-                delay = _calculate_exponential_delay(initial_delay, attempt, max_delay)
+                delay = _get_retry_delay(None, attempt, initial_delay, max_delay)
                 st.warning(f"⏳ Network error. Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
                 time.sleep(delay)
                 continue
             else:
-                st.error(f"❌ Network error after multiple attempts: {e}")
+                st.error(f"❌ Network error: {e}")
                 return None
         
         except Exception as e:
-            # Unexpected errors - don't retry
-            st.error(f"❌ Unexpected error: {e}")
+            st.error(f"❌ Error: {e}")
             return None
     
     return None
@@ -1680,51 +1569,42 @@ class LinkedInJobsAPI:
             return None
 
 class MultiSourceJobAggregator:
-    """Aggregates jobs from multiple sources with failover mechanism."""
+    """Aggregates jobs from multiple sources with simple failover."""
     def __init__(self, primary_source, fallback_source=None, prefer_linkedin=False):
         self.primary_source = primary_source
         self.fallback_source = fallback_source
         self.prefer_linkedin = prefer_linkedin
-        self.last_error = None
-        self.indeed_quota_exceeded = False  # Track if Indeed quota is permanently exceeded
+        self.indeed_quota_exceeded = False
     
     def search_jobs(self, query, location="Hong Kong", max_rows=15, job_type="fulltime", country="hk"):
-        """Search jobs from primary source, fallback to secondary if primary fails."""
+        """Search jobs from primary source, fallback to secondary if needed."""
         all_jobs = []
         sources_used = []
         
-        # If Indeed quota is exceeded or LinkedIn is preferred, skip Indeed entirely
-        skip_indeed = self.indeed_quota_exceeded or self.prefer_linkedin or (self.primary_source is None)
-        
-        # Try primary source (Indeed) unless we're skipping it
-        if not skip_indeed and self.primary_source:
+        # Try primary source (Indeed) unless skipped
+        if not self.indeed_quota_exceeded and not self.prefer_linkedin and self.primary_source:
             try:
                 jobs = self.primary_source.search_jobs(query, location, max_rows, job_type, country)
                 if jobs:
                     all_jobs.extend(jobs)
                     sources_used.append("Indeed")
             except QuotaExceededError:
-                # Indeed quota exceeded - mark it and skip Indeed for future requests
                 self.indeed_quota_exceeded = True
-                st.warning("⚠️ Indeed API quota exceeded. Using LinkedIn only for this session.")
-                skip_indeed = True
+                st.warning("⚠️ Indeed API quota exceeded. Using LinkedIn only.")
             except Exception as e:
-                self.last_error = f"Primary source error: {str(e)}"
-                st.warning(f"⚠️ Primary job source unavailable: {str(e)[:100]}")
+                st.warning(f"⚠️ Indeed unavailable: {str(e)[:100]}")
         
-        # Try fallback source (LinkedIn) if primary failed, returned insufficient results, or we're skipping Indeed
-        if self.fallback_source and (skip_indeed or len(all_jobs) < max_rows // 2):
+        # Try fallback source (LinkedIn) if needed
+        if self.fallback_source and (self.prefer_linkedin or len(all_jobs) < max_rows // 2):
             try:
                 fallback_jobs = self.fallback_source.search_jobs(query, location, max_rows - len(all_jobs), job_type, country)
                 if fallback_jobs:
                     all_jobs.extend(fallback_jobs)
                     sources_used.append("LinkedIn")
             except Exception as e:
-                if not self.last_error:
-                    self.last_error = f"Fallback source error: {str(e)}"
-                st.warning(f"⚠️ LinkedIn API error: {str(e)[:100]}")
+                st.warning(f"⚠️ LinkedIn unavailable: {str(e)[:100]}")
         
-        # Remove duplicates based on title + company
+        # Remove duplicates
         seen = set()
         unique_jobs = []
         for job in all_jobs:
@@ -1734,9 +1614,9 @@ class MultiSourceJobAggregator:
                 unique_jobs.append(job)
         
         if sources_used:
-            st.info(f"📊 Jobs aggregated from: {', '.join(sources_used)} ({len(unique_jobs)} unique jobs)")
+            st.info(f"📊 Found {len(unique_jobs)} jobs from {', '.join(sources_used)}")
         elif not all_jobs:
-            st.error("❌ No jobs found from any source. Please check your API configurations.")
+            st.error("❌ No jobs found. Please check your API configurations.")
         
         return unique_jobs[:max_rows]
 
@@ -1786,124 +1666,37 @@ class TokenUsageTracker:
         self.cost_usd = 0.0
 
 class SemanticJobSearch:
-    def __init__(self, embedding_generator, use_persistent_store=True):
+    """Simple in-memory semantic job search using embeddings."""
+    def __init__(self, embedding_generator):
         self.embedding_gen = embedding_generator
         self.job_embeddings = []
         self.jobs = []
-        self.use_persistent_store = use_persistent_store
-        self.chroma_client = None
-        self.collection = None
-        
-        if use_persistent_store:
-            try:
-                # Initialize ChromaDB with persistent storage
-                chroma_db_path = os.path.join(os.getcwd(), ".chroma_db")
-                os.makedirs(chroma_db_path, exist_ok=True)
-                self.chroma_client = chromadb.PersistentClient(path=chroma_db_path)
-                self.collection = self.chroma_client.get_or_create_collection(
-                    name="job_embeddings",
-                    metadata={"hnsw:space": "cosine"}
-                )
-            except Exception as e:
-                st.warning(f"⚠️ Could not initialize persistent vector store: {e}. Using in-memory storage.")
-                self.use_persistent_store = False
-    
-    def _get_job_hash(self, job):
-        """Generate a hash for a job to use as ID."""
-        job_str = f"{job.get('title', '')}_{job.get('company', '')}_{job.get('url', '')}"
-        return hashlib.md5(job_str.encode()).hexdigest()
     
     def index_jobs(self, jobs, max_jobs_to_index=None):
-        """Simplified job indexing: Check if job exists, if not, embed and store."""
+        """Index jobs by generating embeddings."""
         if not jobs:
-            st.warning("⚠️ No jobs available to index.")
             self.jobs = []
             self.job_embeddings = []
             return
         
         effective_limit = max_jobs_to_index or min(len(jobs), DEFAULT_MAX_JOBS_TO_INDEX)
         effective_limit = max(1, min(effective_limit, len(jobs)))
-        if effective_limit < len(jobs):
-            st.info(f"⚙️ Indexing first {effective_limit} of {len(jobs)} jobs to reduce embedding API calls.")
         jobs_to_index = jobs[:effective_limit]
         self.jobs = jobs_to_index
+        
+        # Create job text for embedding
         job_texts = [
-            f"{job['title']} at {job['company']}. {job['description']} Skills: {', '.join(job['skills'][:5])}"
+            f"{job['title']} at {job['company']}. {job['description']} Skills: {', '.join(job.get('skills', [])[:5])}"
             for job in jobs_to_index
         ]
         
-        st.info(f"📊 Indexing {len(jobs_to_index)} jobs...")
+        # Generate embeddings
+        self.job_embeddings, tokens_used = self.embedding_gen.get_embeddings_batch(job_texts)
         
-        # Simplified indexing: Check existing, generate missing, retrieve all
-        if self.use_persistent_store and self.collection:
-            try:
-                # Generate hashes for all jobs
-                job_hashes = [self._get_job_hash(job) for job in jobs_to_index]
-                
-                # Check which jobs already exist
-                existing_data = self.collection.get(ids=job_hashes, include=['embeddings'])
-                existing_ids = set(existing_data.get('ids', [])) if existing_data else set()
-                
-                # Find jobs that need embeddings
-                jobs_to_embed = []
-                indices_to_embed = []
-                for idx, job_hash in enumerate(job_hashes):
-                    if job_hash not in existing_ids:
-                        jobs_to_embed.append(job_texts[idx])
-                        indices_to_embed.append(idx)
-                
-                # Generate embeddings for new jobs only
-                if jobs_to_embed:
-                    st.info(f"🔄 Generating embeddings for {len(jobs_to_embed)} new jobs...")
-                    new_embeddings, tokens_used = self.embedding_gen.get_embeddings_batch(jobs_to_embed)
-                    
-                    # Update token tracker
-                    token_tracker = get_token_tracker()
-                    if token_tracker:
-                        token_tracker.add_embedding_tokens(tokens_used)
-                    
-                    # Store new embeddings
-                    for idx, emb in zip(indices_to_embed, new_embeddings):
-                        if emb:  # Only store if embedding was successfully generated
-                            job_hash = job_hashes[idx]
-                            self.collection.upsert(
-                                ids=[job_hash],
-                                embeddings=[emb],
-                                documents=[job_texts[idx]],
-                                metadatas=[{"job_index": idx}]
-                            )
-                
-                # Retrieve all embeddings (existing + newly generated)
-                retrieved = self.collection.get(ids=job_hashes, include=['embeddings'])
-                if retrieved and 'embeddings' in retrieved and retrieved['embeddings']:
-                    # Map hashes to embeddings and maintain job order
-                    hash_to_emb = {h: e for h, e in zip(retrieved['ids'], retrieved['embeddings'])}
-                    self.job_embeddings = [hash_to_emb.get(h, None) for h in job_hashes]
-                    # Filter out None values
-                    self.job_embeddings = [e for e in self.job_embeddings if e is not None]
-                    st.success(f"✅ Indexed {len(self.job_embeddings)} jobs (using persistent store)")
-                else:
-                    # Fallback: generate all if retrieval fails
-                    self.job_embeddings, tokens_used = self.embedding_gen.get_embeddings_batch(job_texts)
-                    token_tracker = get_token_tracker()
-                    if token_tracker:
-                        token_tracker.add_embedding_tokens(tokens_used)
-                    st.success(f"✅ Indexed {len(self.job_embeddings)} jobs")
-            except Exception as e:
-                st.warning(f"⚠️ Error using persistent store: {e}. Generating new embeddings...")
-                self.job_embeddings, tokens_used = self.embedding_gen.get_embeddings_batch(job_texts)
-                token_tracker = get_token_tracker()
-                if token_tracker:
-                    token_tracker.add_embedding_tokens(tokens_used)
-                self.use_persistent_store = False
-                st.success(f"✅ Indexed {len(self.job_embeddings)} jobs")
-        else:
-            # Fallback to in-memory storage
-            self.job_embeddings, tokens_used = self.embedding_gen.get_embeddings_batch(job_texts)
-            token_tracker = get_token_tracker()
-            if token_tracker:
-                token_tracker.add_embedding_tokens(tokens_used)
-            st.success(f"✅ Indexed {len(self.job_embeddings)} jobs")
+        # Track token usage
+        token_tracker = get_token_tracker()
+        if token_tracker:
+            token_tracker.add_embedding_tokens(tokens_used)
     
     def search(self, query=None, top_k=10, resume_embedding=None):
         """Simplified search: Use pre-computed resume embedding if available, otherwise generate from query.
@@ -2025,29 +1818,6 @@ class SemanticJobSearch:
         
         return min(match_score, 1.0), missing_skills[:5]
 
-def is_cache_valid(cache_entry):
-    """Check if cache entry is still valid (not expired)."""
-    if not cache_entry or not isinstance(cache_entry, dict):
-        return False
-    
-    expires_at = cache_entry.get('expires_at')
-    if expires_at is None:
-        # Legacy cache without TTL - consider invalid for safety
-        return False
-    
-    # Handle both datetime objects and string timestamps
-    if isinstance(expires_at, str):
-        try:
-            expires_at = datetime.fromisoformat(expires_at)
-        except ValueError:
-            try:
-                expires_at = datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
-            except Exception:
-                return False
-    
-    return datetime.now() < expires_at
-
-
 def _build_jobs_cache_key(query, location, max_rows, job_type, country):
     """Create a unique cache key for job searches."""
     normalized_query = (query or "").strip().lower()
@@ -2060,95 +1830,75 @@ def _build_jobs_cache_key(query, location, max_rows, job_type, country):
     ])
 
 
-def _ensure_jobs_cache_structure():
-    """Ensure jobs_cache is always a dict keyed by cache keys (handles legacy formats)."""
-    if 'jobs_cache' not in st.session_state or not isinstance(st.session_state.jobs_cache, dict):
-        st.session_state.jobs_cache = {}
-        return
-    cache = st.session_state.jobs_cache
-    if cache and 'jobs' in cache and isinstance(cache['jobs'], list):
-        cache_key = cache.get('cache_key') or _build_jobs_cache_key(
-            cache.get('query', ''),
-            cache.get('location', 'Hong Kong'),
-            cache.get('count', len(cache.get('jobs', []))),
-            cache.get('job_type', 'fulltime'),
-            cache.get('country', 'hk')
-        )
-        st.session_state.jobs_cache = {cache_key: {**cache, 'cache_key': cache_key}}
-
-
 def _get_cached_jobs(query, location, max_rows, job_type, country):
-    """Return cached jobs for a given search signature if valid."""
-    _ensure_jobs_cache_structure()
+    """Return cached jobs if valid."""
+    if 'jobs_cache' not in st.session_state:
+        st.session_state.jobs_cache = {}
+    
     cache_key = _build_jobs_cache_key(query, location, max_rows, job_type, country)
     cache_entry = st.session_state.jobs_cache.get(cache_key)
+    
     if not cache_entry:
         return None
-    if not is_cache_valid(cache_entry):
-        st.session_state.jobs_cache.pop(cache_key, None)
-        return None
+    
+    # Check if cache is expired
+    expires_at = cache_entry.get('expires_at')
+    if expires_at:
+        try:
+            if isinstance(expires_at, str):
+                expires_at = datetime.fromisoformat(expires_at)
+            if datetime.now() >= expires_at:
+                st.session_state.jobs_cache.pop(cache_key, None)
+                return None
+        except (ValueError, TypeError):
+            # Invalid date format - remove cache entry
+            st.session_state.jobs_cache.pop(cache_key, None)
+            return None
+    
     return cache_entry
 
 
 def _store_jobs_in_cache(query, location, max_rows, job_type, country, jobs, cache_ttl_hours=168):
-    """Persist job results in cache with TTL metadata."""
-    _ensure_jobs_cache_structure()
+    """Store job results in cache with TTL."""
+    if 'jobs_cache' not in st.session_state:
+        st.session_state.jobs_cache = {}
+    
     cache_key = _build_jobs_cache_key(query, location, max_rows, job_type, country)
-    now = datetime.now()
-    expires_at = now + timedelta(hours=cache_ttl_hours)
+    expires_at = datetime.now() + timedelta(hours=cache_ttl_hours)
+    
     st.session_state.jobs_cache[cache_key] = {
         'jobs': jobs,
         'count': len(jobs),
-        'timestamp': now.isoformat(),
-        'query': query,
-        'location': location,
-        'job_type': job_type,
-        'country': country,
-        'cache_key': cache_key,
+        'timestamp': datetime.now().isoformat(),
         'expires_at': expires_at.isoformat()
     }
-    return st.session_state.jobs_cache[cache_key]
 
 
 def fetch_jobs_with_cache(scraper, query, location="Hong Kong", max_rows=25, job_type="fulltime",
                           country="hk", cache_ttl_hours=168, force_refresh=False):
-    """
-    Fetch jobs with session-level caching to avoid RapidAPI rate limits.
-    Set force_refresh=True to bypass cache for a particular query.
-    IMPORTANT: force_refresh should ONLY be True when user explicitly clicks a "Refresh Jobs" button,
-    never implicitly based on timestamps or status checks.
-    """
+    """Fetch jobs with session-level caching."""
     if scraper is None:
         return []
-    _ensure_jobs_cache_structure()
-    cache_key = _build_jobs_cache_key(query, location, max_rows, job_type, country)
+    
     if force_refresh:
-        if cache_key in st.session_state.jobs_cache:
-            st.caption("🔁 Forcing a fresh job search (cache bypassed)")
+        cache_key = _build_jobs_cache_key(query, location, max_rows, job_type, country)
         st.session_state.jobs_cache.pop(cache_key, None)
+        st.caption("🔁 Fetching fresh job results...")
     else:
         cache_entry = _get_cached_jobs(query, location, max_rows, job_type, country)
         if cache_entry:
-            timestamp = cache_entry.get('timestamp')
-            expires_at = cache_entry.get('expires_at')
-            expires_in_minutes = None
-            if isinstance(expires_at, str):
-                try:
-                    expires_dt = datetime.fromisoformat(expires_at)
-                    expires_in_minutes = max(0, int((expires_dt - datetime.now()).total_seconds() // 60))
-                except ValueError:
-                    pass
-            if timestamp and isinstance(timestamp, str):
-                try:
+            timestamp = cache_entry.get('timestamp', '')
+            try:
+                if isinstance(timestamp, str):
                     ts_dt = datetime.fromisoformat(timestamp)
                     human_ts = ts_dt.strftime("%b %d %H:%M")
-                except ValueError:
-                    human_ts = timestamp
-            else:
+                else:
+                    human_ts = str(timestamp)
+            except (ValueError, TypeError):
                 human_ts = "earlier"
-            remaining_text = f" (~{expires_in_minutes} min left)" if expires_in_minutes is not None else ""
-            st.caption(f"♻️ Using cached job results from {human_ts}{remaining_text}")
+            st.caption(f"♻️ Using cached results from {human_ts}")
             return cache_entry.get('jobs', [])
+    
     jobs = scraper.search_jobs(query, location, max_rows, job_type, country)
     if jobs:
         _store_jobs_in_cache(query, location, max_rows, job_type, country, jobs, cache_ttl_hours)
@@ -2639,224 +2389,19 @@ def extract_text_from_resume(uploaded_file):
         st.error(f"Error extracting text from resume: {e}")
         return None
 
-def extract_relevant_resume_sections(resume_text):
-    """Extract only Experience and Education sections from resume text to reduce token usage in Pass 2 verification"""
-    if not resume_text:
-        return ""
-    
-    # Common section headers to look for (case-insensitive)
-    experience_keywords = [
-        r'experience', r'work experience', r'employment', r'employment history',
-        r'professional experience', r'work history', r'career history', r'positions held'
-    ]
-    education_keywords = [
-        r'education', r'academic background', r'academic qualifications',
-        r'educational background', r'qualifications', r'degrees'
-    ]
-    
-    # Split resume into lines for easier parsing
-    lines = resume_text.split('\n')
-    relevant_sections = []
-    current_section = None
-    in_experience = False
-    in_education = False
-    
-    for i, line in enumerate(lines):
-        line_stripped = line.strip()
-        if not line_stripped:
-            continue
-        
-        # Check if this line is a section header
-        line_lower = line_stripped.lower()
-        
-        # Check for experience section
-        if any(re.search(rf'\b{kw}\b', line_lower) for kw in experience_keywords):
-            if not in_experience:
-                in_experience = True
-                in_education = False
-                if current_section:
-                    relevant_sections.append(current_section)
-                current_section = line + '\n'
-            continue
-        
-        # Check for education section
-        if any(re.search(rf'\b{kw}\b', line_lower) for kw in education_keywords):
-            if not in_education:
-                in_education = True
-                if current_section:
-                    relevant_sections.append(current_section)
-                current_section = line + '\n'
-            continue
-        
-        # Check if we hit another major section (stop collecting)
-        major_sections = [r'summary', r'objective', r'skills', r'certifications', 
-                         r'awards', r'publications', r'projects', r'contact', r'personal']
-        if any(re.search(rf'\b{section}\b', line_lower) for section in major_sections):
-            if in_experience or in_education:
-                if current_section:
-                    relevant_sections.append(current_section)
-                current_section = None
-                in_experience = False
-                in_education = False
-            continue
-        
-        # If we're in a relevant section, add the line
-        if in_experience or in_education:
-            if current_section:
-                current_section += line + '\n'
-    
-    # Add the last section if we're still collecting
-    if current_section and (in_experience or in_education):
-        relevant_sections.append(current_section)
-    
-    # Combine all relevant sections
-    result = '\n'.join(relevant_sections)
-    
-    # If we couldn't extract specific sections, try a simpler approach:
-    # Look for date patterns and company names (common in experience sections)
-    if not result or len(result) < 100:
-        # Fallback: extract text that likely contains experience/education
-        # Look for patterns like dates, job titles, company names
-        date_pattern = r'\b(19|20)\d{2}\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}'
-        # Get context around lines with dates (likely experience/education)
-        result_lines = []
-        for line in lines:
-            if re.search(date_pattern, line, re.IGNORECASE):
-                result_lines.append(line)
-            elif result_lines:  # Add a few lines after dates for context
-                if len([l for l in result_lines[-3:] if l.strip()]) < 3:
-                    result_lines.append(line)
-                else:
-                    break
-        if result_lines:
-            result = '\n'.join(result_lines[:50])  # Limit to 50 lines
-    
-    # Limit the result to a reasonable size (much smaller than 4000 chars)
-    if result:
-        # Limit to approximately 2000 characters (about half of original 4000)
-        # This still provides enough context for verification while reducing tokens
-        return result[:2000] if len(result) > 2000 else result
-    
-    # Final fallback: return empty string (will use Pass 1 data only for verification)
-    return ""
-
 def extract_profile_from_resume(resume_text):
-    """Use Azure OpenAI to extract structured profile information from resume text with two-pass self-correction"""
+    """Extract structured profile information from resume text using Azure OpenAI."""
     try:
         text_gen = get_text_generator()
-        
-        # Check if text generator was initialized successfully
         if text_gen is None:
             st.error("⚠️ Azure OpenAI is not configured. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
             return None
         
-        # FIRST PASS: Initial extraction
-        prompt_pass1 = f"""You are an expert at parsing resumes. Extract structured information from the following resume text.
+        # Single-pass extraction with optimized prompt
+        prompt = f"""Extract structured information from this resume. Be accurate with dates, company names, and job titles.
 
 RESUME TEXT:
 {resume_text}
-
-Please extract and return the following information in JSON format:
-{{
-    "name": "Full name",
-    "email": "Email address",
-    "phone": "Phone number",
-    "location": "City, State/Country",
-    "linkedin": "LinkedIn URL if mentioned",
-    "portfolio": "Portfolio/website URL if mentioned",
-    "summary": "Professional summary or objective (2-3 sentences)",
-    "experience": "Work experience in chronological order with job titles, companies, dates, and key achievements (formatted as bullet points)",
-    "education": "Education details including degrees, institutions, and graduation dates",
-    "skills": "Comma-separated list of technical and soft skills",
-    "certifications": "Professional certifications, awards, publications, or other achievements"
-}}
-
-Important:
-- If information is not found, use "N/A" or empty string
-- Format experience with clear job titles, companies, dates, and bullet points for achievements
-- Extract all relevant skills mentioned
-- Keep the summary concise but informative
-- Return ONLY valid JSON, no additional text or markdown"""
-        
-        payload_pass1 = {
-            "messages": [
-                {"role": "system", "content": "You are a resume parser. Extract structured information and return only valid JSON."},
-                {"role": "user", "content": prompt_pass1}
-            ],
-            "max_tokens": 2000,
-            "temperature": 0.3,
-            "response_format": {"type": "json_object"}
-        }
-        
-        def make_request_pass1():
-            return requests.post(
-                text_gen.url,
-                headers=text_gen.headers,
-                json=payload_pass1,
-                timeout=60
-            )
-        
-        response_pass1 = api_call_with_retry(make_request_pass1, max_retries=3)
-        
-        if not response_pass1 or response_pass1.status_code != 200:
-            if response_pass1 and response_pass1.status_code == 429:
-                st.error("🚫 Rate limit reached for profile extraction. Please wait a few minutes and try again.")
-            else:
-                error_detail = response_pass1.text[:200] if response_pass1 and response_pass1.text else "No error details"
-                endpoint_info = f"Endpoint: {text_gen.url.split('/deployments')[0]}" if text_gen else "Endpoint: Not configured"
-                st.error(f"API Error: {response_pass1.status_code if response_pass1 else 'Unknown'} - {error_detail}\n\n{endpoint_info}")
-            return None
-        
-        result_pass1 = response_pass1.json()
-        content_pass1 = result_pass1['choices'][0]['message']['content']
-        
-        # Track token usage for first pass
-        if text_gen.token_tracker and 'usage' in result_pass1:
-            usage = result_pass1['usage']
-            prompt_tokens = usage.get('prompt_tokens', 0)
-            completion_tokens = usage.get('completion_tokens', 0)
-            text_gen.token_tracker.add_completion_tokens(prompt_tokens, completion_tokens)
-        
-        # Parse first pass JSON
-        try:
-            profile_data_pass1 = json.loads(content_pass1)
-        except json.JSONDecodeError:
-            # Try to find JSON in the response
-            json_match = re.search(r'\{.*\}', content_pass1, re.DOTALL)
-            if json_match:
-                profile_data_pass1 = json.loads(json_match.group())
-            else:
-                st.error("Could not parse extracted profile data from first pass. Please try again.")
-                return None
-        
-        # SECOND PASS: Self-correction - verify dates and company names
-        # Extract only relevant sections (Experience and Education) to reduce token usage
-        relevant_resume_sections = extract_relevant_resume_sections(resume_text)
-        
-        # Build verification prompt with only relevant sections
-        if relevant_resume_sections:
-            resume_context = f"""RELEVANT RESUME SECTIONS (Experience and Education only):
-{relevant_resume_sections}"""
-        else:
-            # Fallback: if we can't extract sections, use a smaller chunk or just Pass 1 data
-            # This should rarely happen, but provides a safety net
-            resume_context = f"""RELEVANT RESUME SECTIONS (limited):
-{resume_text[:1500]}"""
-        
-        prompt_pass2 = f"""You are a resume quality checker. Review the extracted profile data against the relevant resume sections and verify accuracy, especially for dates and company names.
-
-{resume_context}
-
-EXTRACTED PROFILE DATA (from first pass):
-{json.dumps(profile_data_pass1, indent=2)}
-
-Please review and correct the extracted data, paying special attention to:
-1. **Dates** - Verify all employment dates, education dates, and certification dates are accurate
-2. **Company Names** - Verify all company/organization names are spelled correctly
-3. **Job Titles** - Verify job titles are accurate
-4. **Education Institutions** - Verify institution names are correct
-
-Return the corrected profile data in the same JSON format. If everything is correct, return the data as-is. If corrections are needed, return the corrected version.
 
 Return ONLY valid JSON with this structure:
 {{
@@ -2873,51 +2418,57 @@ Return ONLY valid JSON with this structure:
     "certifications": "Professional certifications, awards, publications, or other achievements"
 }}
 
-Return ONLY valid JSON, no additional text or markdown."""
+Important:
+- If information is not found, use empty string
+- Verify dates, company names, and job titles are accurate
+- Format experience with clear job titles, companies, dates, and bullet points
+- Extract all relevant skills mentioned
+- Return ONLY valid JSON, no additional text or markdown"""
         
-        payload_pass2 = {
+        payload = {
             "messages": [
-                {"role": "system", "content": "You are a resume quality checker. Verify and correct extracted data, especially dates and company names. Return only valid JSON."},
-                {"role": "user", "content": prompt_pass2}
+                {"role": "system", "content": "You are a resume parser. Extract structured information accurately. Return only valid JSON."},
+                {"role": "user", "content": prompt}
             ],
             "max_tokens": 2000,
-            "temperature": 0.1,  # Lower temperature for more accurate corrections
+            "temperature": 0.2,  # Lower temperature for accuracy
             "response_format": {"type": "json_object"}
         }
         
-        def make_request_pass2():
-            return requests.post(
-                text_gen.url,
-                headers=text_gen.headers,
-                json=payload_pass2,
-                timeout=60
+        def make_request():
+            return requests.post(text_gen.url, headers=text_gen.headers, json=payload, timeout=60)
+        
+        response = api_call_with_retry(make_request, max_retries=3)
+        
+        if not response or response.status_code != 200:
+            if response and response.status_code == 429:
+                st.error("🚫 Rate limit reached. Please wait a few minutes and try again.")
+            else:
+                st.error(f"API Error: {response.status_code if response else 'Unknown'}")
+            return None
+        
+        result = response.json()
+        content = result['choices'][0]['message']['content']
+        
+        # Track token usage
+        if text_gen.token_tracker and 'usage' in result:
+            usage = result['usage']
+            text_gen.token_tracker.add_completion_tokens(
+                usage.get('prompt_tokens', 0),
+                usage.get('completion_tokens', 0)
             )
         
-        response_pass2 = api_call_with_retry(make_request_pass2, max_retries=3)
-        
-        if response_pass2 and response_pass2.status_code == 200:
-            result_pass2 = response_pass2.json()
-            content_pass2 = result_pass2['choices'][0]['message']['content']
-            
-            # Track token usage for second pass
-            if text_gen.token_tracker and 'usage' in result_pass2:
-                usage = result_pass2['usage']
-                prompt_tokens = usage.get('prompt_tokens', 0)
-                completion_tokens = usage.get('completion_tokens', 0)
-                text_gen.token_tracker.add_completion_tokens(prompt_tokens, completion_tokens)
-            
-            # Parse second pass JSON (corrected version)
-            try:
-                profile_data_corrected = json.loads(content_pass2)
-                return profile_data_corrected
-            except json.JSONDecodeError:
-                # If second pass fails, return first pass result
-                st.warning("⚠️ Self-correction pass failed, using initial extraction. Some details may need manual verification.")
-                return profile_data_pass1
-        else:
-            # If second pass fails, return first pass result
-            st.warning("⚠️ Self-correction pass failed, using initial extraction. Some details may need manual verification.")
-            return profile_data_pass1
+        # Parse JSON
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            # Try to extract JSON from response
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            else:
+                st.error("Could not parse extracted profile data. Please try again.")
+                return None
             
     except Exception as e:
         st.error(f"Error extracting profile: {e}")
@@ -3635,181 +3186,77 @@ def render_sidebar():
             if not st.session_state.resume_text and not st.session_state.user_profile.get('summary'):
                 st.error("⚠️ Please upload your CV first!")
             else:
-                # Automatically infer target domains and salary from profile
-                text_gen = get_text_generator()
-                if text_gen is None:
-                    st.error("⚠️ Azure OpenAI is not configured. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
-                    return
+                # Simple search query - use profile skills or default
                 user_profile = st.session_state.user_profile
-                profile_text = f"{user_profile.get('summary', '')} {user_profile.get('experience', '')} {user_profile.get('skills', '')}"
+                user_skills = user_profile.get('skills', '')
+                if user_skills:
+                    # Use first few skills as search query
+                    skills_list = [s.strip() for s in str(user_skills).split(',')[:3] if s.strip()]
+                    search_query = " ".join(skills_list) if skills_list else "Hong Kong jobs"
+                else:
+                    search_query = "Hong Kong jobs"
                 
-                with st.spinner("🤖 Analyzing your profile to infer preferences..."):
-                    # Infer target domains
-                    domain_prompt = f"""Based on this professional profile, identify the most relevant target domains/industries for job search in Hong Kong.
-
-Profile:
-{profile_text[:2000]}
-
-Return a JSON object with:
-{{
-    "domains": ["Domain1", "Domain2", "Domain3"],
-    "reasoning": "brief explanation"
-}}
-
-Choose from: FinTech, ESG & Sustainability, Data Analytics, Digital Transformation, Investment Banking, Consulting, Technology, Healthcare, Education
-
-Return ONLY valid JSON."""
+                scraper = get_job_scraper()
+                
+                with st.spinner("🔄 Fetching jobs and analyzing..."):
+                    jobs = fetch_jobs_with_cache(
+                        scraper,
+                        search_query,
+                        location="Hong Kong",
+                        max_rows=25,
+                        job_type="fulltime",
+                        country="hk",
+                        force_refresh=False
+                    )
                     
-                    domain_payload = {
-                        "messages": [
-                            {"role": "system", "content": "You are a career advisor. Analyze profiles and suggest relevant job domains. Return only JSON."},
-                            {"role": "user", "content": domain_prompt}
-                        ],
-                        "max_tokens": 200,
-                        "temperature": 0.3,
-                        "response_format": {"type": "json_object"}
-                    }
+                    if not jobs:
+                        st.warning("⚠️ No jobs found. Try adjusting your search query.")
+                        return
                     
-                    def make_domain_request():
-                        return requests.post(text_gen.url, headers=text_gen.headers, json=domain_payload, timeout=30)
+                    # Perform semantic matching
+                    embedding_gen = get_embedding_generator()
+                    desired_matches = min(15, len(jobs))
+                    jobs_to_index_limit = _determine_index_limit(len(jobs), desired_matches)
+                    top_match_count = min(desired_matches, jobs_to_index_limit)
                     
-                    domain_response = api_call_with_retry(make_domain_request, max_retries=2)
-                    inferred_domains = []
-                    if domain_response and domain_response.status_code == 200:
-                        result = domain_response.json()
-                        content = result['choices'][0]['message']['content']
-                        try:
-                            domain_data = json.loads(content)
-                            inferred_domains = domain_data.get('domains', [])
-                            if text_gen.token_tracker and 'usage' in result:
-                                usage = result['usage']
-                                text_gen.token_tracker.add_completion_tokens(usage.get('prompt_tokens', 0), usage.get('completion_tokens', 0))
-                        except:
-                            pass
+                    # Index jobs for semantic search
+                    search_engine = SemanticJobSearch(embedding_gen)
+                    search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
                     
-                    # Infer salary expectation
-                    salary_prompt = f"""Based on this professional profile and Hong Kong market rates, estimate a reasonable minimum monthly salary expectation in HKD.
-
-Profile:
-{profile_text[:2000]}
-
-Return a JSON object with:
-{{
-    "min_salary_hkd_monthly": <number>,
-    "reasoning": "brief explanation"
-}}
-
-Return ONLY valid JSON."""
-                    
-                    salary_payload = {
-                        "messages": [
-                            {"role": "system", "content": "You are a salary advisor for Hong Kong market. Estimate reasonable salary expectations. Return only JSON."},
-                            {"role": "user", "content": salary_prompt}
-                        ],
-                        "max_tokens": 150,
-                        "temperature": 0.2,
-                        "response_format": {"type": "json_object"}
-                    }
-                    
-                    def make_salary_request():
-                        return requests.post(text_gen.url, headers=text_gen.headers, json=salary_payload, timeout=30)
-                    
-                    salary_response = api_call_with_retry(make_salary_request, max_retries=2)
-                    inferred_salary = 45000  # Default
-                    if salary_response and salary_response.status_code == 200:
-                        result = salary_response.json()
-                        content = result['choices'][0]['message']['content']
-                        try:
-                            salary_data = json.loads(content)
-                            inferred_salary = int(salary_data.get('min_salary_hkd_monthly', 45000))
-                            if text_gen.token_tracker and 'usage' in result:
-                                usage = result['usage']
-                                text_gen.token_tracker.add_completion_tokens(usage.get('prompt_tokens', 0), usage.get('completion_tokens', 0))
-                        except:
-                            pass
-                    
-                    # Store inferred values
-                    st.session_state.target_domains = inferred_domains
-                    st.session_state.salary_expectation = inferred_salary
-                    
-                    # Build search query from inferred domains
-                    search_query = " ".join(inferred_domains) if inferred_domains else "Hong Kong jobs"
-                    scraper = get_job_scraper()
-                    
-                    with st.spinner("🔄 Fetching jobs and analyzing..."):
-                        # Fetch jobs with cache (force_refresh=False to respect cache gate)
-                        # force_refresh is NEVER set to True here - it should only be True
-                        # when user explicitly clicks a "Refresh Jobs" button
-                        jobs = fetch_jobs_with_cache(
-                            scraper,
-                            search_query,
-                            location="Hong Kong",
-                            max_rows=25,
-                            job_type="fulltime",
-                            country="hk",
-                            force_refresh=False  # Explicitly False - never bypass cache from Analyze button
+                    # Use pre-computed resume embedding
+                    resume_embedding = st.session_state.get('resume_embedding')
+                    if not resume_embedding and st.session_state.resume_text:
+                        resume_embedding = generate_and_store_resume_embedding(
+                            st.session_state.resume_text,
+                            user_profile if user_profile else None
                         )
-                        
-                        if jobs:
-                            # Apply domain filters
-                            if inferred_domains:
-                                jobs = filter_jobs_by_domains(jobs, inferred_domains)
-                            
-                            # Apply salary filter
-                            if inferred_salary > 0:
-                                jobs = filter_jobs_by_salary(jobs, inferred_salary)
-                        
-                        if not jobs:
-                            st.warning("⚠️ No jobs match your filters. Try adjusting your criteria.")
-                            return
-                        
-                        # Perform semantic matching
-                        embedding_gen = get_embedding_generator()
-                        desired_matches = min(15, len(jobs))
-                        jobs_to_index_limit = _determine_index_limit(len(jobs), desired_matches)
-                        top_match_count = min(desired_matches, jobs_to_index_limit)
-                        search_engine = SemanticJobSearch(embedding_gen)
-                        # search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)  # Disabled to save embedding token costs and avoid Rate Limit 429 errors
-                        
-                        # Use pre-computed resume embedding if available (simplified - no query string needed)
-                        resume_embedding = st.session_state.get('resume_embedding')
-                        if not resume_embedding and st.session_state.resume_text:
-                            # Generate embedding if it doesn't exist yet
-                            resume_embedding = generate_and_store_resume_embedding(
-                                st.session_state.resume_text,
-                                st.session_state.user_profile if st.session_state.user_profile else None
-                            )
-                        
-                        # Fallback: build query string if no resume embedding available
-                        resume_query = None
-                        if not resume_embedding:
-                            if st.session_state.resume_text:
-                                resume_query = st.session_state.resume_text
-                                if st.session_state.user_profile.get('summary'):
-                                    profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
-                                    resume_query = f"{resume_query} {profile_data}"
-                            else:
-                                resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
-                        
-                        results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
-                        
-                        if results:
-                            # Calculate skill matches
-                            user_skills = st.session_state.user_profile.get('skills', '')
-                            for result in results:
-                                job_skills = result['job'].get('skills', [])
-                                skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
-                                result['skill_match_score'] = skill_score
-                                result['missing_skills'] = missing_skills
-                            
-                            # Sort results by skill_match_score (highest to lowest)
-                            results.sort(key=lambda x: x.get('skill_match_score', 0.0), reverse=True)
-                            
-                            st.session_state.matched_jobs = results
-                            st.session_state.dashboard_ready = True
-                            st.rerun()
+                    
+                    # Build query string if no embedding
+                    resume_query = None
+                    if not resume_embedding:
+                        if st.session_state.resume_text:
+                            resume_query = st.session_state.resume_text
                         else:
-                            st.error("❌ No jobs found. Please try different filters.")
+                            resume_query = f"{user_profile.get('summary', '')} {user_profile.get('experience', '')} {user_profile.get('skills', '')}"
+                    
+                    results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
+                    
+                    if results:
+                        # Calculate skill matches
+                        for result in results:
+                            job_skills = result['job'].get('skills', [])
+                            skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
+                            result['skill_match_score'] = skill_score
+                            result['missing_skills'] = missing_skills
+                        
+                        # Sort by skill match score
+                        results.sort(key=lambda x: x.get('skill_match_score', 0.0), reverse=True)
+                        
+                        st.session_state.matched_jobs = results
+                        st.session_state.dashboard_ready = True
+                        st.rerun()
+                    else:
+                        st.error("❌ No matching jobs found.")
         
         # Skill Matching Calculation Matrix
         display_skill_matching_matrix(st.session_state.user_profile)
