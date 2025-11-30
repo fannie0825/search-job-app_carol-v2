@@ -51,6 +51,8 @@ DEFAULT_MAX_JOBS_TO_INDEX = _get_config_int("MAX_JOBS_TO_INDEX", 50, minimum=30)
 # Rate limiting: delay between batches in seconds (gentle spacing between successful batches)
 # Note: api_call_with_retry() handles 429 errors with exponential backoff automatically
 EMBEDDING_BATCH_DELAY = _get_config_int("EMBEDDING_BATCH_DELAY", 1, minimum=0)
+# RapidAPI rate limiting: max requests per minute (default: 3 for free tier)
+RAPIDAPI_MAX_REQUESTS_PER_MINUTE = _get_config_int("RAPIDAPI_MAX_REQUESTS_PER_MINUTE", 3, minimum=1)
 
 
 def _determine_index_limit(total_jobs, desired_top_matches):
@@ -1377,8 +1379,47 @@ Return ONLY the recruiter note text, no labels or formatting."""
         else:
             return "Consider highlighting more relevant experience from your background to strengthen your application."
 
+class RateLimiter:
+    """Simple rate limiter that enforces requests per minute limit."""
+    def __init__(self, max_requests_per_minute):
+        self.max_requests_per_minute = max_requests_per_minute
+        self.request_times = []
+        self.lock = False  # Simple lock to prevent concurrent modifications
+    
+    def wait_if_needed(self):
+        """Wait if we've exceeded the rate limit, otherwise record the request."""
+        if self.max_requests_per_minute <= 0:
+            return  # No rate limiting
+        
+        now = time.time()
+        one_minute_ago = now - 60
+        
+        # Clean up old requests (older than 1 minute)
+        self.request_times = [t for t in self.request_times if t > one_minute_ago]
+        
+        # If we're at the limit, wait until the oldest request is more than 1 minute old
+        if len(self.request_times) >= self.max_requests_per_minute:
+            oldest_request = min(self.request_times)
+            wait_time = 60 - (now - oldest_request) + 1  # Add 1 second buffer
+            if wait_time > 0:
+                st.info(f"⏳ Rate limiting: Waiting {int(wait_time)} seconds to stay under {self.max_requests_per_minute} requests/minute...")
+                time.sleep(wait_time)
+                # Clean up again after waiting
+                now = time.time()
+                one_minute_ago = now - 60
+                self.request_times = [t for t in self.request_times if t > one_minute_ago]
+        
+        # Record this request
+        self.request_times.append(time.time())
+
+
+class QuotaExceededError(Exception):
+    """Raised when API quota is exceeded (429 or quota-related errors)."""
+    pass
+
+
 class IndeedScraperAPI:
-    def __init__(self, api_key):
+    def __init__(self, api_key, skip_if_quota_exceeded=False):
         self.api_key = api_key
         self.url = "https://indeed-scraper-api.p.rapidapi.com/api/job"
         self.headers = {
@@ -1386,6 +1427,9 @@ class IndeedScraperAPI:
             'x-rapidapi-host': 'indeed-scraper-api.p.rapidapi.com',
             'x-rapidapi-key': api_key
         }
+        # Initialize rate limiter
+        self.rate_limiter = RateLimiter(RAPIDAPI_MAX_REQUESTS_PER_MINUTE)
+        self.skip_if_quota_exceeded = skip_if_quota_exceeded
     
     def search_jobs(self, query, location="Hong Kong", max_rows=15, job_type="fulltime", country="hk"):
         payload = {
@@ -1402,6 +1446,9 @@ class IndeedScraperAPI:
         }
         
         try:
+            # Enforce rate limiting before making the request
+            self.rate_limiter.wait_if_needed()
+            
             def make_request():
                 return requests.post(self.url, headers=self.headers, json=payload, timeout=60)
             
@@ -1423,10 +1470,23 @@ class IndeedScraperAPI:
             else:
                 if response:
                     if response.status_code == 429:
-                        st.error("🚫 Rate limit reached for job search API. Please wait a few minutes and try again.")
+                        error_msg = "🚫 Indeed API quota exceeded (429). Switching to LinkedIn..."
+                        if self.skip_if_quota_exceeded:
+                            st.warning(error_msg)
+                            raise QuotaExceededError("Indeed API quota exceeded")
+                        else:
+                            st.error("🚫 Rate limit reached for job search API. Please wait a few minutes and try again.")
                     else:
                         error_detail = response.text[:200] if response.text else "No error details"
-                        st.error(f"API Error: {response.status_code} - {error_detail}")
+                        # Check if error indicates quota exceeded
+                        if "quota" in error_detail.lower() or "exceeded" in error_detail.lower():
+                            if self.skip_if_quota_exceeded:
+                                st.warning("🚫 Indeed API quota exceeded. Switching to LinkedIn...")
+                                raise QuotaExceededError("Indeed API quota exceeded")
+                            else:
+                                st.error(f"API Error: {response.status_code} - {error_detail}")
+                        else:
+                            st.error(f"API Error: {response.status_code} - {error_detail}")
                 return []
                 
         except Exception as e:
@@ -1470,50 +1530,134 @@ class LinkedInJobsAPI:
     """Alternative job source using LinkedIn Jobs API via RapidAPI as fallback."""
     def __init__(self, api_key):
         self.api_key = api_key
-        self.url = "https://linkedin-jobs-search.p.rapidapi.com/"
+        self.base_url = "https://linkedin-job-search-api.p.rapidapi.com"
         self.headers = {
-            'X-RapidAPI-Key': api_key,
-            'X-RapidAPI-Host': 'linkedin-jobs-search.p.rapidapi.com',
-            'Content-Type': 'application/json'
+            'x-rapidapi-key': api_key,
+            'x-rapidapi-host': 'linkedin-job-search-api.p.rapidapi.com'
         }
+        # Initialize rate limiter (shares the same limit as Indeed API)
+        self.rate_limiter = RateLimiter(RAPIDAPI_MAX_REQUESTS_PER_MINUTE)
     
     def search_jobs(self, query, location="Hong Kong", max_rows=15, job_type="fulltime", country="hk"):
         """Search jobs from LinkedIn Jobs API."""
-        payload = {
-            "search_terms": query,
-            "location": location,
-            "page": "1"
-        }
-        
         try:
-            def make_request():
-                return requests.get(self.url, headers=self.headers, params=payload, timeout=60)
+            # Enforce rate limiting before making the request
+            self.rate_limiter.wait_if_needed()
             
-            response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+            # Build query parameters
+            # The API endpoint /active-jb-1h supports offset and description_type
+            # We'll need to fetch multiple pages if needed to get max_rows
+            all_jobs = []
+            offset = 0
+            page_size = min(max_rows, 25)  # Fetch in batches
             
-            if response and response.status_code == 200:
-                data = response.json()
-                jobs = []
+            while len(all_jobs) < max_rows:
+                # Build endpoint with query parameters
+                # Try to include query and location if API supports them
+                params = {
+                    "offset": offset,
+                    "description_type": "text"
+                }
+                # Add query/location if provided (API might support these)
+                if query:
+                    params["query"] = query
+                if location:
+                    params["location"] = location
                 
-                # Parse LinkedIn Jobs API response format
-                if isinstance(data, list):
-                    for job_data in data[:max_rows]:
-                        parsed_job = self._parse_job(job_data)
-                        if parsed_job:
-                            jobs.append(parsed_job)
-                elif isinstance(data, dict) and 'jobs' in data:
-                    for job_data in data['jobs'][:max_rows]:
-                        parsed_job = self._parse_job(job_data)
-                        if parsed_job:
-                            jobs.append(parsed_job)
+                # Build query string with URL encoding
+                from urllib.parse import urlencode
+                query_string = urlencode(params)
+                endpoint = f"/active-jb-1h?{query_string}"
                 
-                return jobs
-            else:
-                return []
+                def make_request():
+                    return requests.get(f"{self.base_url}{endpoint}", headers=self.headers, timeout=60)
+                
+                response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
+                
+                if response and response.status_code == 200:
+                    try:
+                        data = response.json()
+                        
+                        # Parse response - could be list or dict
+                        job_list = []
+                        if isinstance(data, list):
+                            job_list = data
+                        elif isinstance(data, dict):
+                            # Try common response formats
+                            if 'jobs' in data:
+                                job_list = data['jobs']
+                            elif 'data' in data:
+                                job_list = data['data']
+                            elif 'results' in data:
+                                job_list = data['results']
+                            else:
+                                # If it's a single job object, wrap it
+                                job_list = [data] if data else []
+                        
+                        # Filter jobs by query/location if possible
+                        filtered_jobs = self._filter_jobs(job_list, query, location)
+                        
+                        for job_data in filtered_jobs:
+                            if len(all_jobs) >= max_rows:
+                                break
+                            parsed_job = self._parse_job(job_data)
+                            if parsed_job:
+                                all_jobs.append(parsed_job)
+                        
+                        # If we got fewer jobs than requested, try next page
+                        if len(job_list) < page_size or len(all_jobs) >= max_rows:
+                            break
+                        
+                        offset += page_size
+                        
+                    except (json.JSONDecodeError, KeyError, TypeError) as e:
+                        st.warning(f"⚠️ Error parsing LinkedIn API response: {str(e)[:100]}")
+                        break
+                else:
+                    # If we get an error, stop trying
+                    if response:
+                        if response.status_code == 429:
+                            st.warning("⚠️ LinkedIn API rate limit reached. Returning partial results.")
+                        else:
+                            st.warning(f"⚠️ LinkedIn API error: {response.status_code}")
+                    break
+            
+            return all_jobs[:max_rows]
                 
         except Exception as e:
-            # Silently fail for fallback source
+            # Log error but don't fail completely
+            st.warning(f"⚠️ LinkedIn API error: {str(e)[:100]}")
             return []
+    
+    def _filter_jobs(self, job_list, query, location):
+        """Filter jobs by query and location if the API doesn't support it natively."""
+        if not query and not location:
+            return job_list
+        
+        filtered = []
+        query_lower = query.lower() if query else ""
+        location_lower = location.lower() if location else ""
+        
+        for job in job_list:
+            # Check if job matches query (in title, description, or company)
+            matches_query = True
+            if query_lower:
+                title = str(job.get('title', '') or job.get('job_title', '')).lower()
+                company = str(job.get('company', '') or job.get('company_name', '')).lower()
+                description = str(job.get('description', '') or job.get('job_description', '')).lower()
+                matches_query = (query_lower in title or query_lower in company or query_lower in description)
+            
+            # Check if job matches location
+            matches_location = True
+            if location_lower:
+                job_location = str(job.get('location', '') or job.get('job_location', '')).lower()
+                matches_location = location_lower in job_location or "remote" in job_location or "anywhere" in job_location
+            
+            if matches_query and matches_location:
+                filtered.append(job)
+        
+        # If filtering removed all jobs, return original list (API might not support filtering)
+        return filtered if filtered else job_list
     
     def _parse_job(self, job_data):
         """Parse LinkedIn job data into standard format."""
@@ -1537,28 +1681,39 @@ class LinkedInJobsAPI:
 
 class MultiSourceJobAggregator:
     """Aggregates jobs from multiple sources with failover mechanism."""
-    def __init__(self, primary_source, fallback_source=None):
+    def __init__(self, primary_source, fallback_source=None, prefer_linkedin=False):
         self.primary_source = primary_source
         self.fallback_source = fallback_source
+        self.prefer_linkedin = prefer_linkedin
         self.last_error = None
+        self.indeed_quota_exceeded = False  # Track if Indeed quota is permanently exceeded
     
     def search_jobs(self, query, location="Hong Kong", max_rows=15, job_type="fulltime", country="hk"):
         """Search jobs from primary source, fallback to secondary if primary fails."""
         all_jobs = []
         sources_used = []
         
-        # Try primary source
-        try:
-            jobs = self.primary_source.search_jobs(query, location, max_rows, job_type, country)
-            if jobs:
-                all_jobs.extend(jobs)
-                sources_used.append("Indeed")
-        except Exception as e:
-            self.last_error = f"Primary source error: {str(e)}"
-            st.warning(f"⚠️ Primary job source unavailable: {str(e)[:100]}")
+        # If Indeed quota is exceeded or LinkedIn is preferred, skip Indeed entirely
+        skip_indeed = self.indeed_quota_exceeded or self.prefer_linkedin or (self.primary_source is None)
         
-        # Try fallback source if primary failed or returned insufficient results
-        if self.fallback_source and (len(all_jobs) < max_rows // 2):
+        # Try primary source (Indeed) unless we're skipping it
+        if not skip_indeed and self.primary_source:
+            try:
+                jobs = self.primary_source.search_jobs(query, location, max_rows, job_type, country)
+                if jobs:
+                    all_jobs.extend(jobs)
+                    sources_used.append("Indeed")
+            except QuotaExceededError:
+                # Indeed quota exceeded - mark it and skip Indeed for future requests
+                self.indeed_quota_exceeded = True
+                st.warning("⚠️ Indeed API quota exceeded. Using LinkedIn only for this session.")
+                skip_indeed = True
+            except Exception as e:
+                self.last_error = f"Primary source error: {str(e)}"
+                st.warning(f"⚠️ Primary job source unavailable: {str(e)[:100]}")
+        
+        # Try fallback source (LinkedIn) if primary failed, returned insufficient results, or we're skipping Indeed
+        if self.fallback_source and (skip_indeed or len(all_jobs) < max_rows // 2):
             try:
                 fallback_jobs = self.fallback_source.search_jobs(query, location, max_rows - len(all_jobs), job_type, country)
                 if fallback_jobs:
@@ -1567,6 +1722,7 @@ class MultiSourceJobAggregator:
             except Exception as e:
                 if not self.last_error:
                     self.last_error = f"Fallback source error: {str(e)}"
+                st.warning(f"⚠️ LinkedIn API error: {str(e)[:100]}")
         
         # Remove duplicates based on title + company
         seen = set()
@@ -1579,6 +1735,8 @@ class MultiSourceJobAggregator:
         
         if sources_used:
             st.info(f"📊 Jobs aggregated from: {', '.join(sources_used)} ({len(unique_jobs)} unique jobs)")
+        elif not all_jobs:
+            st.error("❌ No jobs found from any source. Please check your API configurations.")
         
         return unique_jobs[:max_rows]
 
@@ -2081,6 +2239,10 @@ def get_job_scraper():
     Uses RAPIDAPI_KEY for both primary (Indeed) and fallback (LinkedIn) sources.
     If LINKEDIN_API_KEY is set, it will be used for the fallback source instead.
     Both APIs typically use the same RapidAPI key if subscribed to both.
+    
+    Configuration options:
+    - USE_LINKEDIN_ONLY: If True, skip Indeed entirely and use LinkedIn only
+    - SKIP_INDEED_IF_QUOTA_EXCEEDED: If True, automatically skip Indeed when quota is exceeded
     """
     if 'job_aggregator' not in st.session_state:
         # Primary source: Indeed (required)
@@ -2089,7 +2251,13 @@ def get_job_scraper():
             st.error("⚠️ RAPIDAPI_KEY is required in secrets. Please configure it in your .streamlit/secrets.toml")
             return None
         
-        primary_source = IndeedScraperAPI(RAPIDAPI_KEY)
+        # Check if we should prefer LinkedIn or skip Indeed when quota exceeded
+        use_linkedin_only = st.secrets.get("USE_LINKEDIN_ONLY", "").lower() in ("true", "1", "yes")
+        skip_if_quota_exceeded = st.secrets.get("SKIP_INDEED_IF_QUOTA_EXCEEDED", "").lower() in ("true", "1", "yes")
+        
+        primary_source = None
+        if not use_linkedin_only:
+            primary_source = IndeedScraperAPI(RAPIDAPI_KEY, skip_if_quota_exceeded=skip_if_quota_exceeded)
         
         # Fallback source: LinkedIn (optional)
         # Use separate key if provided, otherwise use the same RapidAPI key
@@ -2104,7 +2272,14 @@ def get_job_scraper():
             # The aggregator will work with just the primary source
             pass
         
-        st.session_state.job_aggregator = MultiSourceJobAggregator(primary_source, fallback_source)
+        # If LinkedIn only is enabled, make LinkedIn the primary source
+        if use_linkedin_only and fallback_source:
+            st.info("ℹ️ Using LinkedIn only (Indeed skipped per configuration)")
+            primary_source = None
+            # Swap: LinkedIn becomes primary, Indeed becomes fallback (but we won't use Indeed)
+            st.session_state.job_aggregator = MultiSourceJobAggregator(fallback_source, None, prefer_linkedin=True)
+        else:
+            st.session_state.job_aggregator = MultiSourceJobAggregator(primary_source, fallback_source, prefer_linkedin=use_linkedin_only)
     
     return st.session_state.job_aggregator
 
