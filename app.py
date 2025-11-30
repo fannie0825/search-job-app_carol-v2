@@ -2252,8 +2252,18 @@ def get_job_scraper():
             return None
         
         # Check if we should prefer LinkedIn or skip Indeed when quota exceeded
-        use_linkedin_only = st.secrets.get("USE_LINKEDIN_ONLY", "").lower() in ("true", "1", "yes")
-        skip_if_quota_exceeded = st.secrets.get("SKIP_INDEED_IF_QUOTA_EXCEEDED", "").lower() in ("true", "1", "yes")
+        # Handle both boolean and string values from secrets
+        use_linkedin_only_val = st.secrets.get("USE_LINKEDIN_ONLY", "")
+        if isinstance(use_linkedin_only_val, bool):
+            use_linkedin_only = use_linkedin_only_val
+        else:
+            use_linkedin_only = str(use_linkedin_only_val).lower() in ("true", "1", "yes")
+        
+        skip_if_quota_exceeded_val = st.secrets.get("SKIP_INDEED_IF_QUOTA_EXCEEDED", "")
+        if isinstance(skip_if_quota_exceeded_val, bool):
+            skip_if_quota_exceeded = skip_if_quota_exceeded_val
+        else:
+            skip_if_quota_exceeded = str(skip_if_quota_exceeded_val).lower() in ("true", "1", "yes")
         
         primary_source = None
         if not use_linkedin_only:
