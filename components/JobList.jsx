@@ -106,7 +106,7 @@ const JobList = ({ jobs = null, loading = false }) => {
                       className="flex items-center gap-2 text-accent hover:text-accent-dark font-medium text-sm whitespace-nowrap"
                     >
                       <ExternalLink className="w-4 h-4" />
-                      View on Indeed
+                      {jobUrl.includes('linkedin.com') ? 'View on LinkedIn' : 'View on Indeed'}
                     </a>
                   )}
                 </div>

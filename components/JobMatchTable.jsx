@@ -241,10 +241,21 @@ const JobMatchTable = ({ jobs = null, loading = false, onTailorResume, toast }) 
                               </p>
                             </div>
                             <div className="pt-2">
-                              <button className="text-sm text-accent hover:text-accent-dark font-medium flex items-center gap-1">
-                                View Full Job Description
-                                <ExternalLink className="w-3 h-3" />
-                              </button>
+                              {(job.jobUrl || job.url || job.link) ? (
+                                <a
+                                  href={job.jobUrl || job.url || job.link}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-sm text-accent hover:text-accent-dark font-medium flex items-center gap-1"
+                                >
+                                  View Full Job Description
+                                  <ExternalLink className="w-3 h-3" />
+                                </a>
+                              ) : (
+                                <span className="text-sm text-text-muted dark:text-dark-text-secondary">
+                                  Job URL not available
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
