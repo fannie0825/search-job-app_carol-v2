@@ -3550,17 +3550,99 @@ Return ONLY valid JSON."""
                     scraper = get_job_scraper()
                     
                     with st.spinner("🔄 Fetching jobs and analyzing..."):
-                        # Fetch more jobs initially to allow for filtering (with caching)
-                        cache_ttl_hours = 24
-                        jobs = fetch_jobs_with_cache(
-                            scraper,
-                            search_query,
-                            location="Hong Kong",
-                            max_rows=25,
-                            job_type="fulltime",
-                            country="hk",
-                            cache_ttl_hours=cache_ttl_hours
-                        )
+                        # ============================================================
+                        # TEST MODE: RapidAPI Call Isolated (Temporary)
+                        # ============================================================
+                        # ORIGINAL CODE (COMMENTED OUT FOR TESTING):
+                        # cache_ttl_hours = 24
+                        # jobs = fetch_jobs_with_cache(
+                        #     scraper,
+                        #     search_query,
+                        #     location="Hong Kong",
+                        #     max_rows=25,
+                        #     job_type="fulltime",
+                        #     country="hk",
+                        #     cache_ttl_hours=cache_ttl_hours
+                        # )
+                        
+                        # NEW TEMPORARY CODE: Mock job data to test if RapidAPI is causing 429 errors
+                        st.info("🧪 **TEST MODE**: Using mock job data (RapidAPI call bypassed)")
+                        jobs = [
+                            {
+                                'title': 'Senior Python Developer',
+                                'company': 'Tech Corp Hong Kong',
+                                'location': 'Hong Kong',
+                                'description': 'We are looking for an experienced Python developer with strong AI/ML background. You will work on cutting-edge projects involving machine learning, data analytics, and cloud infrastructure. Requirements include Python, TensorFlow, AWS, and Docker.',
+                                'salary': 'Not specified',
+                                'job_type': 'Full-time',
+                                'url': '#',
+                                'posted_date': 'Recently',
+                                'benefits': ['Health Insurance', 'Flexible Hours'],
+                                'skills': ['Python', 'Machine Learning', 'AI', 'TensorFlow', 'AWS', 'Docker'],
+                                'company_rating': 4.5,
+                                'is_remote': False
+                            },
+                            {
+                                'title': 'Full Stack JavaScript Developer',
+                                'company': 'Digital Solutions Ltd',
+                                'location': 'Hong Kong',
+                                'description': 'Join our team as a Full Stack Developer specializing in modern web technologies. You will build scalable web applications using React, Node.js, and cloud services. Experience with TypeScript, REST APIs, and database design required.',
+                                'salary': 'Not specified',
+                                'job_type': 'Full-time',
+                                'url': '#',
+                                'posted_date': 'Recently',
+                                'benefits': ['Remote Work', 'Stock Options'],
+                                'skills': ['JavaScript', 'React', 'Node.js', 'TypeScript', 'REST API', 'PostgreSQL'],
+                                'company_rating': 4.2,
+                                'is_remote': True
+                            },
+                            {
+                                'title': 'Data Analyst - FinTech',
+                                'company': 'Finance Innovations HK',
+                                'location': 'Hong Kong',
+                                'description': 'Seeking a Data Analyst to join our FinTech team. You will analyze financial data, build predictive models, and create dashboards. Strong skills in SQL, Python, data visualization, and statistical analysis required.',
+                                'salary': 'Not specified',
+                                'job_type': 'Full-time',
+                                'url': '#',
+                                'posted_date': 'Recently',
+                                'benefits': ['Bonus', 'Training Budget'],
+                                'skills': ['SQL', 'Python', 'Data Analysis', 'Tableau', 'Statistics', 'Excel'],
+                                'company_rating': 4.0,
+                                'is_remote': False
+                            },
+                            {
+                                'title': 'Cloud Infrastructure Engineer',
+                                'company': 'Cloud Services Asia',
+                                'location': 'Hong Kong',
+                                'description': 'We need a Cloud Infrastructure Engineer to design and maintain our cloud infrastructure. Experience with AWS, Kubernetes, Terraform, and CI/CD pipelines is essential. You will work with microservices architecture and containerization.',
+                                'salary': 'Not specified',
+                                'job_type': 'Full-time',
+                                'url': '#',
+                                'posted_date': 'Recently',
+                                'benefits': ['Health Insurance', 'Gym Membership'],
+                                'skills': ['AWS', 'Kubernetes', 'Terraform', 'Docker', 'CI/CD', 'Microservices'],
+                                'company_rating': 4.3,
+                                'is_remote': False
+                            },
+                            {
+                                'title': 'AI Research Scientist',
+                                'company': 'AI Research Lab',
+                                'location': 'Hong Kong',
+                                'description': 'Join our AI research team to develop next-generation machine learning models. You will work on NLP, computer vision, and deep learning projects. PhD or Master\'s in Computer Science with strong publication record preferred.',
+                                'salary': 'Not specified',
+                                'job_type': 'Full-time',
+                                'url': '#',
+                                'posted_date': 'Recently',
+                                'benefits': ['Research Budget', 'Conference Travel'],
+                                'skills': ['Machine Learning', 'Deep Learning', 'NLP', 'Computer Vision', 'PyTorch', 'Research'],
+                                'company_rating': 4.7,
+                                'is_remote': False
+                            }
+                        ]
+                        # Store mock jobs in cache for consistency with rest of flow
+                        if 'jobs_cache' not in st.session_state:
+                            st.session_state.jobs_cache = {}
+                        # ============================================================
                         
                         if jobs:
                             # Apply domain filters
@@ -3897,17 +3979,97 @@ def display_refine_results_section(matched_jobs, user_profile):
             scraper = get_job_scraper()
             
             with st.spinner("🔄 Refreshing results with new filters..."):
-                cache_ttl_hours = 24
-                jobs = fetch_jobs_with_cache(
-                    scraper,
-                    search_query,
-                    location="Hong Kong",
-                    max_rows=25,
-                    job_type="fulltime",
-                    country="hk",
-                    cache_ttl_hours=cache_ttl_hours,
-                    force_refresh=force_refresh
-                )
+                # ============================================================
+                # TEST MODE: RapidAPI Call Isolated (Temporary)
+                # ============================================================
+                # ORIGINAL CODE (COMMENTED OUT FOR TESTING):
+                # cache_ttl_hours = 24
+                # jobs = fetch_jobs_with_cache(
+                #     scraper,
+                #     search_query,
+                #     location="Hong Kong",
+                #     max_rows=25,
+                #     job_type="fulltime",
+                #     country="hk",
+                #     cache_ttl_hours=cache_ttl_hours,
+                #     force_refresh=force_refresh
+                # )
+                
+                # NEW TEMPORARY CODE: Mock job data to test if RapidAPI is causing 429 errors
+                st.info("🧪 **TEST MODE**: Using mock job data (RapidAPI call bypassed)")
+                jobs = [
+                    {
+                        'title': 'Senior Python Developer',
+                        'company': 'Tech Corp Hong Kong',
+                        'location': 'Hong Kong',
+                        'description': 'We are looking for an experienced Python developer with strong AI/ML background. You will work on cutting-edge projects involving machine learning, data analytics, and cloud infrastructure. Requirements include Python, TensorFlow, AWS, and Docker.',
+                        'salary': 'Not specified',
+                        'job_type': 'Full-time',
+                        'url': '#',
+                        'posted_date': 'Recently',
+                        'benefits': ['Health Insurance', 'Flexible Hours'],
+                        'skills': ['Python', 'Machine Learning', 'AI', 'TensorFlow', 'AWS', 'Docker'],
+                        'company_rating': 4.5,
+                        'is_remote': False
+                    },
+                    {
+                        'title': 'Full Stack JavaScript Developer',
+                        'company': 'Digital Solutions Ltd',
+                        'location': 'Hong Kong',
+                        'description': 'Join our team as a Full Stack Developer specializing in modern web technologies. You will build scalable web applications using React, Node.js, and cloud services. Experience with TypeScript, REST APIs, and database design required.',
+                        'salary': 'Not specified',
+                        'job_type': 'Full-time',
+                        'url': '#',
+                        'posted_date': 'Recently',
+                        'benefits': ['Remote Work', 'Stock Options'],
+                        'skills': ['JavaScript', 'React', 'Node.js', 'TypeScript', 'REST API', 'PostgreSQL'],
+                        'company_rating': 4.2,
+                        'is_remote': True
+                    },
+                    {
+                        'title': 'Data Analyst - FinTech',
+                        'company': 'Finance Innovations HK',
+                        'location': 'Hong Kong',
+                        'description': 'Seeking a Data Analyst to join our FinTech team. You will analyze financial data, build predictive models, and create dashboards. Strong skills in SQL, Python, data visualization, and statistical analysis required.',
+                        'salary': 'Not specified',
+                        'job_type': 'Full-time',
+                        'url': '#',
+                        'posted_date': 'Recently',
+                        'benefits': ['Bonus', 'Training Budget'],
+                        'skills': ['SQL', 'Python', 'Data Analysis', 'Tableau', 'Statistics', 'Excel'],
+                        'company_rating': 4.0,
+                        'is_remote': False
+                    },
+                    {
+                        'title': 'Cloud Infrastructure Engineer',
+                        'company': 'Cloud Services Asia',
+                        'location': 'Hong Kong',
+                        'description': 'We need a Cloud Infrastructure Engineer to design and maintain our cloud infrastructure. Experience with AWS, Kubernetes, Terraform, and CI/CD pipelines is essential. You will work with microservices architecture and containerization.',
+                        'salary': 'Not specified',
+                        'job_type': 'Full-time',
+                        'url': '#',
+                        'posted_date': 'Recently',
+                        'benefits': ['Health Insurance', 'Gym Membership'],
+                        'skills': ['AWS', 'Kubernetes', 'Terraform', 'Docker', 'CI/CD', 'Microservices'],
+                        'company_rating': 4.3,
+                        'is_remote': False
+                    },
+                    {
+                        'title': 'AI Research Scientist',
+                        'company': 'AI Research Lab',
+                        'location': 'Hong Kong',
+                        'description': 'Join our AI research team to develop next-generation machine learning models. You will work on NLP, computer vision, and deep learning projects. PhD or Master\'s in Computer Science with strong publication record preferred.',
+                        'salary': 'Not specified',
+                        'job_type': 'Full-time',
+                        'url': '#',
+                        'posted_date': 'Recently',
+                        'benefits': ['Research Budget', 'Conference Travel'],
+                        'skills': ['Machine Learning', 'Deep Learning', 'NLP', 'Computer Vision', 'PyTorch', 'Research'],
+                        'company_rating': 4.7,
+                        'is_remote': False
+                    }
+                ]
+                # ============================================================
                 
                 if jobs:
                     # Apply domain filters
