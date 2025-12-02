@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, FileText, ExternalLink } from 'lucide-react';
+import { ChevronDown, ChevronUp, FileText, ExternalLink, X, Eye } from 'lucide-react';
 import LoadingSpinner from './LoadingSpinner';
 
 const JobMatchTable = ({ jobs = null, loading = false, onTailorResume, toast }) => {
-  const [expandedRows, setExpandedRows] = useState(new Set([2])); // Row 3 (index 2) expanded by default
+  const [expandedRows, setExpandedRows] = useState(new Set());
+  const [selectedJob, setSelectedJob] = useState(null);
 
   const defaultJobs = [
     {
@@ -63,17 +64,49 @@ const JobMatchTable = ({ jobs = null, loading = false, onTailorResume, toast }) 
     }
   ];
 
+  // Normalize job data structure to handle different backend formats
+  const normalizeJob = (job, index) => {
+    // Generate a stable ID if missing
+    const id = job.id || job.jobId || job._id || `job_${index}`;
+    
+    return {
+      id: String(id), // Ensure ID is always a string for consistent comparison
+      rank: job.rank || index + 1,
+      jobTitle: job.jobTitle || job.title || job.position || 'Untitled Position',
+      company: job.company || job.companyName || job.employer || 'Unknown Company',
+      location: job.location || job.jobLocation || job.city || 'Location not specified',
+      matchScore: job.matchScore || job.score || job.combined_match_score || 0,
+      fitType: job.fitType || job.matchType || 'Semantic / Skill-Overlap',
+      whyFit: job.whyFit || job.why_fit || job.matchReason || job.reason || 'Good match based on your profile and experience.',
+      missingSkill: job.missingSkill || job.missing_skill || job.skillGap || job.missing_skills?.[0] || 'No significant skill gaps identified.',
+      jobUrl: job.jobUrl || job.url || job.link || job.job_url || job.external_url,
+      description: job.description || job.summary || job.jobDescription || '',
+      skills: job.skills || job.requiredSkills || [],
+      salary: job.salary || job.salaryRange || '',
+      jobType: job.jobType || job.type || '',
+      // Store original job data for resume generation
+      originalJob: job,
+    };
+  };
+
   // Use provided jobs or fallback to default mock data
-  const displayJobs = jobs || defaultJobs;
+  const displayJobs = (jobs || defaultJobs).map((job, index) => normalizeJob(job, index));
 
   const toggleRow = (id) => {
     const newExpanded = new Set(expandedRows);
-    if (newExpanded.has(id)) {
-      newExpanded.delete(id);
+    if (newExpanded.has(String(id))) {
+      newExpanded.delete(String(id));
     } else {
-      newExpanded.add(id);
+      newExpanded.add(String(id));
     }
     setExpandedRows(newExpanded);
+  };
+
+  const handleViewDetails = (job, e) => {
+    if (e) {
+      e.stopPropagation();
+    }
+    setSelectedJob(job);
   };
 
   const handleTailorResume = async (job) => {
@@ -150,7 +183,7 @@ const JobMatchTable = ({ jobs = null, loading = false, onTailorResume, toast }) 
           </thead>
           <tbody>
             {displayJobs.map((job) => {
-              const isExpanded = expandedRows.has(job.id);
+              const isExpanded = expandedRows.has(String(job.id));
               return (
                 <React.Fragment key={job.id}>
                   <tr
@@ -168,6 +201,7 @@ const JobMatchTable = ({ jobs = null, loading = false, onTailorResume, toast }) 
                             toggleRow(job.id);
                           }}
                           className="text-text-muted dark:text-dark-text-secondary hover:text-accent transition-colors"
+                          aria-label={isExpanded ? "Collapse details" : "Expand details"}
                         >
                           {isExpanded ? (
                             <ChevronUp className="w-4 h-4" />
@@ -207,16 +241,30 @@ const JobMatchTable = ({ jobs = null, loading = false, onTailorResume, toast }) 
                       </span>
                     </td>
                     <td className="py-4 px-4">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleTailorResume(job);
-                        }}
-                        className="btn-secondary btn-secondary-dark text-sm py-2 px-4 flex items-center gap-2"
-                      >
-                        <FileText className="w-4 h-4" />
-                        Tailor Resume
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleViewDetails(job, e);
+                          }}
+                          className="btn-secondary btn-secondary-dark text-sm py-2 px-3 flex items-center gap-1.5"
+                          title="View full job details"
+                        >
+                          <Eye className="w-4 h-4" />
+                          Details
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleTailorResume(job);
+                          }}
+                          className="btn-secondary btn-secondary-dark text-sm py-2 px-3 flex items-center gap-1.5"
+                          title="Generate tailored resume for this job"
+                        >
+                          <FileText className="w-4 h-4" />
+                          Tailor Resume
+                        </button>
+                      </div>
                     </td>
                   </tr>
                   {isExpanded && (
@@ -224,38 +272,59 @@ const JobMatchTable = ({ jobs = null, loading = false, onTailorResume, toast }) 
                       <td colSpan="7" className="py-4 px-4">
                         <div className="bg-gray-50 dark:bg-dark-bg-main rounded-lg p-4 border-l-4 border-accent">
                           <div className="space-y-3">
-                            <div>
-                              <h4 className="text-sm font-semibold text-text-heading dark:text-dark-text-primary mb-1">
-                                Why this fits:
-                              </h4>
-                              <p className="text-sm text-text-body dark:text-dark-text-secondary">
-                                {job.whyFit}
-                              </p>
-                            </div>
-                            <div>
-                              <h4 className="text-sm font-semibold text-status-warning dark:text-status-warning mb-1">
-                                Missing skill:
-                              </h4>
-                              <p className="text-sm text-text-body dark:text-dark-text-secondary">
-                                {job.missingSkill}
-                              </p>
-                            </div>
-                            <div className="pt-2">
-                              {(job.jobUrl || job.url || job.link) ? (
+                            {job.whyFit && (
+                              <div>
+                                <h4 className="text-sm font-semibold text-text-heading dark:text-dark-text-primary mb-1">
+                                  Why this fits:
+                                </h4>
+                                <p className="text-sm text-text-body dark:text-dark-text-secondary">
+                                  {job.whyFit}
+                                </p>
+                              </div>
+                            )}
+                            {job.missingSkill && (
+                              <div>
+                                <h4 className="text-sm font-semibold text-status-warning dark:text-status-warning mb-1">
+                                  Missing skill:
+                                </h4>
+                                <p className="text-sm text-text-body dark:text-dark-text-secondary">
+                                  {job.missingSkill}
+                                </p>
+                              </div>
+                            )}
+                            {job.description && (
+                              <div>
+                                <h4 className="text-sm font-semibold text-text-heading dark:text-dark-text-primary mb-1">
+                                  Job Description:
+                                </h4>
+                                <p className="text-sm text-text-body dark:text-dark-text-secondary line-clamp-3">
+                                  {job.description}
+                                </p>
+                              </div>
+                            )}
+                            <div className="pt-2 flex items-center gap-4">
+                              {job.jobUrl && (
                                 <a
-                                  href={job.jobUrl || job.url || job.link}
+                                  href={job.jobUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="text-sm text-accent hover:text-accent-dark font-medium flex items-center gap-1"
+                                  onClick={(e) => e.stopPropagation()}
                                 >
                                   View Full Job Description
                                   <ExternalLink className="w-3 h-3" />
                                 </a>
-                              ) : (
-                                <span className="text-sm text-text-muted dark:text-dark-text-secondary">
-                                  Job URL not available
-                                </span>
                               )}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleViewDetails(job, e);
+                                }}
+                                className="text-sm text-accent hover:text-accent-dark font-medium flex items-center gap-1"
+                              >
+                                View Complete Details
+                                <Eye className="w-3 h-3" />
+                              </button>
                             </div>
                           </div>
                         </div>
@@ -268,6 +337,136 @@ const JobMatchTable = ({ jobs = null, loading = false, onTailorResume, toast }) 
           </tbody>
         </table>
       </div>
+      )}
+
+      {/* Job Details Modal */}
+      {selectedJob && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50" onClick={() => setSelectedJob(null)}>
+          <div className="bg-bg-card dark:bg-dark-bg-card rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="sticky top-0 bg-bg-card dark:bg-dark-bg-card border-b border-gray-200 dark:border-dark-border p-6 flex items-center justify-between">
+              <h2 className="text-2xl font-bold text-text-heading dark:text-dark-text-primary">
+                {selectedJob.jobTitle}
+              </h2>
+              <button
+                onClick={() => setSelectedJob(null)}
+                className="p-2 hover:bg-gray-100 dark:hover:bg-dark-bg-main rounded-lg transition-colors"
+                aria-label="Close"
+              >
+                <X className="w-6 h-6 text-text-muted dark:text-dark-text-secondary" />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-6">
+              {/* Basic Info */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-text-muted dark:text-dark-text-secondary mb-1">Company</h3>
+                  <p className="text-text-heading dark:text-dark-text-primary">{selectedJob.company}</p>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-text-muted dark:text-dark-text-secondary mb-1">Location</h3>
+                  <p className="text-text-heading dark:text-dark-text-primary">{selectedJob.location}</p>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-text-muted dark:text-dark-text-secondary mb-1">Match Score</h3>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 bg-gray-200 dark:bg-dark-bg-main rounded-full h-2">
+                      <div
+                        className={`h-2 rounded-full ${getScoreColor(selectedJob.matchScore)}`}
+                        style={{ width: `${selectedJob.matchScore}%` }}
+                      />
+                    </div>
+                    <span className="text-sm font-semibold text-text-heading dark:text-dark-text-primary">
+                      {selectedJob.matchScore}%
+                    </span>
+                  </div>
+                </div>
+                {selectedJob.salary && (
+                  <div>
+                    <h3 className="text-sm font-semibold text-text-muted dark:text-dark-text-secondary mb-1">Salary</h3>
+                    <p className="text-text-heading dark:text-dark-text-primary">{selectedJob.salary}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Why This Fits */}
+              {selectedJob.whyFit && (
+                <div>
+                  <h3 className="text-lg font-semibold text-text-heading dark:text-dark-text-primary mb-2">
+                    Why This Fits
+                  </h3>
+                  <p className="text-text-body dark:text-dark-text-secondary">{selectedJob.whyFit}</p>
+                </div>
+              )}
+
+              {/* Missing Skills */}
+              {selectedJob.missingSkill && (
+                <div>
+                  <h3 className="text-lg font-semibold text-status-warning dark:text-status-warning mb-2">
+                    Skill Gap
+                  </h3>
+                  <p className="text-text-body dark:text-dark-text-secondary">{selectedJob.missingSkill}</p>
+                </div>
+              )}
+
+              {/* Job Description */}
+              {selectedJob.description && (
+                <div>
+                  <h3 className="text-lg font-semibold text-text-heading dark:text-dark-text-primary mb-2">
+                    Job Description
+                  </h3>
+                  <div className="text-text-body dark:text-dark-text-secondary whitespace-pre-wrap">
+                    {selectedJob.description}
+                  </div>
+                </div>
+              )}
+
+              {/* Skills */}
+              {selectedJob.skills && selectedJob.skills.length > 0 && (
+                <div>
+                  <h3 className="text-lg font-semibold text-text-heading dark:text-dark-text-primary mb-2">
+                    Required Skills
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedJob.skills.map((skill, idx) => (
+                      <span
+                        key={idx}
+                        className="px-3 py-1 bg-gray-100 dark:bg-dark-bg-main text-text-body dark:text-dark-text-secondary rounded-full text-sm"
+                      >
+                        {skill}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex items-center gap-4 pt-4 border-t border-gray-200 dark:border-dark-border">
+                {selectedJob.jobUrl && (
+                  <a
+                    href={selectedJob.jobUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn-primary text-sm py-2 px-4 flex items-center gap-2"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    View on Job Board
+                  </a>
+                )}
+                <button
+                  onClick={() => {
+                    handleTailorResume(selectedJob);
+                    setSelectedJob(null);
+                  }}
+                  className="btn-secondary btn-secondary-dark text-sm py-2 px-4 flex items-center gap-2"
+                >
+                  <FileText className="w-4 h-4" />
+                  Generate Tailored Resume
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

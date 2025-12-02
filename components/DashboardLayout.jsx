@@ -130,14 +130,31 @@ const DashboardLayout = () => {
       return;
     }
 
+    // Extract job ID from various possible formats
+    const jobId = job.id || job.jobId || job._id || job.originalJob?.id || job.originalJob?.jobId;
+    
+    if (!jobId) {
+      error('Unable to identify job. Please try again.');
+      return;
+    }
+
     setLoading(true);
     try {
-      const result = await ApiService.generateTailoredResume(profileData, job.id);
-      success(`Tailored resume generated for ${job.jobTitle}!`);
+      info(`Generating tailored resume for ${job.jobTitle || job.title || 'this position'}...`);
+      const result = await ApiService.generateTailoredResume(profileData, jobId);
+      
+      success(`Tailored resume generated for ${job.jobTitle || job.title || 'this position'}!`);
       
       // Handle resume download or display
-      if (result.downloadUrl) {
+      if (result.downloadUrl && result.downloadUrl !== '#') {
         window.open(result.downloadUrl, '_blank');
+      } else if (result.fileUrl) {
+        window.open(result.fileUrl, '_blank');
+      } else if (result.url) {
+        window.open(result.url, '_blank');
+      } else {
+        // If no download URL, show success message with instructions
+        info('Resume generated successfully! Check your downloads or the generated files section.');
       }
     } catch (err) {
       console.error('Resume generation error:', err);
