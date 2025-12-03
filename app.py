@@ -260,52 +260,73 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* Dynamic Color Palette - CSS Variables */
+    /* CareerLens Design System - CSS Variables */
+    /* Matches CareerLens Design System: Navy & Blue Professional Theme */
     :root {
-        /* Light Mode Colors (Elegant/Minimal) */
-        --primary-accent: #00796B;
-        --action-accent: #FFC107;
-        --bg-main: #FAFAFA;
-        --bg-container: #F0F0F0;
-        --text-primary: #333333;
-        --text-secondary: #666666;
-        --success-green: #4CAF50;
+        /* Light Mode Colors - CareerLens Design System */
+        --primary-accent: #3B82F6;        /* Accent Blue - Primary buttons, links, highlights */
+        --action-accent: #3B82F6;         /* Accent Blue - Match scores, action items */
+        --bg-main: #F3F4F6;               /* Main content area (Light Gray/Off-white) */
+        --bg-container: #FFFFFF;          /* Cards and containers (White) */
+        --text-primary: #111827;          /* Headings (Near Black) */
+        --text-secondary: #374151;         /* Body text (Dark Gray) */
+        --text-muted: #6B7280;            /* Muted text (Medium Gray) */
+        --success-green: #10B981;         /* Success states (Green) */
+        --warning-amber: #F59E0B;         /* Warning states (Amber) */
+        --error-red: #EF4444;             /* Error states (Red) */
+        --navy-deep: #1A2B45;             /* Deep Navy - Sidebar background */
+        --navy-light: #2C3E50;            /* Lighter Navy - Hover states */
     }
     
-    /* Dark Mode Colors (Professional/Youthful) */
+    /* Dark Mode Colors - CareerLens Design System */
     [data-theme="dark"] {
-        --primary-accent: #4DD0E1;
-        --action-accent: #FF9800;
-        --bg-main: #1E2124;
-        --bg-container: #282C31;
-        --text-primary: #E0E0E0;
-        --text-secondary: #B0B0B0;
-        --success-green: #66BB6A;
+        --primary-accent: #3B82F6;        /* Accent Blue - Consistent across modes */
+        --action-accent: #60A5FA;         /* Light Blue - Hover states in dark mode */
+        --bg-main: #111827;               /* Main background (Very Dark Gray) */
+        --bg-container: #1F2937;          /* Cards and containers (Dark Gray) */
+        --text-primary: #F9FAFB;          /* Primary text (White) */
+        --text-secondary: #D1D5DB;        /* Secondary text (Light Gray) */
+        --text-muted: #9CA3AF;            /* Muted text in dark mode */
+        --success-green: #10B981;         /* Success states (Green) */
+        --warning-amber: #F59E0B;         /* Warning states (Amber) */
+        --error-red: #EF4444;             /* Error states (Red) */
+        --navy-deep: #0F172A;             /* Darker Navy - Dark mode sidebar */
+        --navy-light: #1A2B45;            /* Deep Navy - Hover states in dark mode */
     }
     
     /* Override Streamlit dark mode - multiple selectors for compatibility */
     .stApp[data-theme="dark"],
     [data-theme="dark"] .stApp,
     .stApp[data-theme="dark"] :root {
-        --primary-accent: #4DD0E1;
-        --action-accent: #FF9800;
-        --bg-main: #1E2124;
-        --bg-container: #282C31;
-        --text-primary: #E0E0E0;
-        --text-secondary: #B0B0B0;
-        --success-green: #66BB6A;
+        --primary-accent: #3B82F6;
+        --action-accent: #60A5FA;
+        --bg-main: #111827;
+        --bg-container: #1F2937;
+        --text-primary: #F9FAFB;
+        --text-secondary: #D1D5DB;
+        --text-muted: #9CA3AF;
+        --success-green: #10B981;
+        --warning-amber: #F59E0B;
+        --error-red: #EF4444;
+        --navy-deep: #0F172A;
+        --navy-light: #1A2B45;
     }
     
     /* Ensure CSS variables work in all contexts */
     html[data-theme="dark"],
     html[data-theme="dark"] :root {
-        --primary-accent: #4DD0E1;
-        --action-accent: #FF9800;
-        --bg-main: #1E2124;
-        --bg-container: #282C31;
-        --text-primary: #E0E0E0;
-        --text-secondary: #B0B0B0;
-        --success-green: #66BB6A;
+        --primary-accent: #3B82F6;
+        --action-accent: #60A5FA;
+        --bg-main: #111827;
+        --bg-container: #1F2937;
+        --text-primary: #F9FAFB;
+        --text-secondary: #D1D5DB;
+        --text-muted: #9CA3AF;
+        --success-green: #10B981;
+        --warning-amber: #F59E0B;
+        --error-red: #EF4444;
+        --navy-deep: #0F172A;
+        --navy-light: #1A2B45;
     }
     
     /* Main Header */
@@ -682,17 +703,17 @@ st.markdown("""
     }
     
     .match-score-high {
-        background-color: #4CAF50;
+        background-color: var(--success-green);
         color: white;
     }
     
     .match-score-medium {
-        background-color: #FFC107;
-        color: #333;
+        background-color: var(--warning-amber);
+        color: white;
     }
     
     .match-score-low {
-        background-color: #FF9800;
+        background-color: var(--error-red);
         color: white;
     }
     

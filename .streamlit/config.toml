@@ -1,16 +1,44 @@
 [theme]
-# Light Mode - Corporate Blue Theme
+# CareerLens Light Mode Theme
+# Matches CareerLens Design System - Professional Navy & Blue Theme
 base = "light"
-primaryColor = "#0F62FE"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F4F7FC"
-textColor = "#161616"
-font = "sans serif"
+primaryColor = "#3B82F6"           # Accent Blue - Primary buttons, links, highlights
+backgroundColor = "#F3F4F6"         # Main content area background (Light Gray/Off-white)
+secondaryBackgroundColor = "#FFFFFF" # Cards and containers (White)
+textColor = "#111827"               # Headings (Near Black)
+font = "sans serif"                 # Streamlit default (Inter/Roboto loaded via CSS)
 
-# Dark Mode - Corporate Blue Theme (Alternative)
+# CareerLens Dark Mode Theme
+# Matches CareerLens Design System - Dark Professional Theme
 [theme.dark]
-primaryColor = "#4589FF"
-backgroundColor = "#161616"
-secondaryBackgroundColor = "#262626"
-textColor = "#F4F4F4"
-font = "sans serif"
+primaryColor = "#3B82F6"            # Accent Blue - Consistent across modes
+backgroundColor = "#111827"         # Main background (Very Dark Gray)
+secondaryBackgroundColor = "#1F2937" # Cards and containers (Dark Gray)
+textColor = "#F9FAFB"               # Primary text (White)
+font = "sans serif"                 # Streamlit default (Inter/Roboto loaded via CSS)
+
+# Additional Streamlit Configuration
+[server]
+# Enable file watcher for development
+fileWatcherType = "auto"
+
+# Browser configuration
+[browser]
+# Gather usage stats (optional - set to false to disable)
+gatherUsageStats = false
+
+# UI Configuration
+[ui]
+# Hide the hamburger menu (optional - set to true to show)
+hideTopBar = false
+hideSidebarNav = false
+
+# Global Configuration
+[global]
+# Development mode settings
+developmentMode = false
+
+# Logger Configuration
+[logger]
+# Log level: ERROR, WARNING, INFO, DEBUG
+level = "error"
