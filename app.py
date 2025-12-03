@@ -37,6 +37,17 @@ def _coerce_positive_int(value, default, minimum=1):
         return default
 
 
+def _coerce_positive_float(value, default, minimum=0.0):
+    """Ensure configuration values are positive floats."""
+    try:
+        if value is None:
+            raise ValueError
+        coerced = float(value)
+        return max(minimum, coerced)
+    except (ValueError, TypeError):
+        return default
+
+
 def _get_config_int(key, default, minimum=1):
     """Look up configuration values from Streamlit secrets or environment."""
     try:
@@ -50,20 +61,39 @@ def _get_config_int(key, default, minimum=1):
     return _coerce_positive_int(candidate, default, minimum)
 
 
+def _get_config_float(key, default, minimum=0.0):
+    """Look up float configuration values from Streamlit secrets or environment."""
+    try:
+        secrets_value = st.secrets.get(key)
+    except (AttributeError, RuntimeError, KeyError, Exception):
+        secrets_value = None
+    env_value = os.getenv(key)
+    candidate = secrets_value if secrets_value not in (None, "") else env_value
+    return _coerce_positive_float(candidate, default, minimum)
+
+
 # Reduced default batch size to avoid rate limits (can be overridden via env var)
 # Note: These are evaluated at module import time, but _get_config_int handles errors gracefully
-DEFAULT_EMBEDDING_BATCH_SIZE = _get_config_int("EMBEDDING_BATCH_SIZE", 20, minimum=5)
-DEFAULT_MAX_JOBS_TO_INDEX = _get_config_int("MAX_JOBS_TO_INDEX", 50, minimum=30)
+DEFAULT_EMBEDDING_BATCH_SIZE = _get_config_int("EMBEDDING_BATCH_SIZE", 15, minimum=5)  # Reduced from 20
+DEFAULT_MAX_JOBS_TO_INDEX = _get_config_int("MAX_JOBS_TO_INDEX", 25, minimum=10)  # Reduced from 50 to minimize API calls
 # Rate limiting: delay between batches in seconds (gentle spacing between successful batches)
 # Note: api_call_with_retry() handles 429 errors with exponential backoff automatically
-EMBEDDING_BATCH_DELAY = _get_config_int("EMBEDDING_BATCH_DELAY", 1, minimum=0)
+EMBEDDING_BATCH_DELAY = _get_config_float("EMBEDDING_BATCH_DELAY", 0.5, minimum=0.0)  # Reduced from 1s to 0.5s
 # RapidAPI rate limiting: max requests per minute (default: 3 for free tier)
 RAPIDAPI_MAX_REQUESTS_PER_MINUTE = _get_config_int("RAPIDAPI_MAX_REQUESTS_PER_MINUTE", 3, minimum=1)
+# Profile extraction: skip Pass 2 (self-correction) by default for faster processing
+# Set to True to enable the self-correction pass (adds 10-30s but improves accuracy)
+ENABLE_PROFILE_PASS2 = os.getenv("ENABLE_PROFILE_PASS2", "false").lower() in ("true", "1", "yes")
 
 
 def _determine_index_limit(total_jobs, desired_top_matches):
-    """Cap how many jobs we embed per search to avoid unnecessary API calls."""
-    baseline = max(desired_top_matches * 3, 30)
+    """Cap how many jobs we embed per search to avoid unnecessary API calls.
+    
+    Optimized to reduce API calls while maintaining good match quality.
+    For 15 desired matches, we index ~20-25 jobs (not 45-50 as before).
+    """
+    # More conservative: 1.5x desired matches instead of 3x
+    baseline = max(desired_top_matches + 10, 15)
     limit = min(DEFAULT_MAX_JOBS_TO_INDEX, baseline)
     return min(total_jobs, limit)
 
@@ -1106,6 +1136,13 @@ if 'selected_job_index' not in st.session_state:
     st.session_state.selected_job_index = None
 if 'dashboard_ready' not in st.session_state:
     st.session_state.dashboard_ready = False
+if 'user_skills_embeddings_cache' not in st.session_state:
+    st.session_state.user_skills_embeddings_cache = {}  # Cache for user skill embeddings
+if 'skill_embeddings_cache' not in st.session_state:
+    st.session_state.skill_embeddings_cache = {}  # General skill embedding cache
+# Flag to use fast string-based skill matching (default: True for speed)
+# Set to False to use slower but more accurate semantic matching
+USE_FAST_SKILL_MATCHING = os.getenv("USE_FAST_SKILL_MATCHING", "true").lower() in ("true", "1", "yes")
 
 class APIMEmbeddingGenerator:
     def __init__(self, api_key, endpoint):
@@ -2002,8 +2039,11 @@ class SemanticJobSearch:
         return results
     
     def calculate_skill_match(self, user_skills, job_skills):
-        """Calculate skill-based match score using semantic similarity (embeddings)
-        Falls back to string-based matching if rate limits are encountered."""
+        """Calculate skill-based match score.
+        
+        By default uses fast string-based matching (USE_FAST_SKILL_MATCHING=true).
+        Set USE_FAST_SKILL_MATCHING=false for slower semantic matching with embeddings.
+        """
         if not user_skills or not job_skills:
             return 0.0, []
         
@@ -2014,15 +2054,38 @@ class SemanticJobSearch:
         if not user_skills_list or not job_skills_list:
             return 0.0, []
         
+        # Use fast string-based matching by default (no API calls, instant results)
+        if USE_FAST_SKILL_MATCHING:
+            return self._calculate_skill_match_string_based(user_skills_list, job_skills_list)
+        
+        # Semantic matching with embeddings (slower but more accurate)
         try:
-            # Generate embeddings for all skills (use smaller batch size for skills)
-            user_skill_embeddings, user_tokens = self.embedding_gen.get_embeddings_batch(user_skills_list, batch_size=10)
-            job_skill_embeddings, job_tokens = self.embedding_gen.get_embeddings_batch(job_skills_list, batch_size=10)
+            # Check cache for user skills embeddings
+            user_skills_key = ",".join(sorted(user_skills_list))
+            if user_skills_key in st.session_state.user_skills_embeddings_cache:
+                user_skill_embeddings = st.session_state.user_skills_embeddings_cache[user_skills_key]
+                user_tokens = 0  # No API call needed
+            else:
+                # Generate embeddings for user skills (use smaller batch size)
+                user_skill_embeddings, user_tokens = self.embedding_gen.get_embeddings_batch(user_skills_list, batch_size=10)
+                if user_skill_embeddings:
+                    st.session_state.user_skills_embeddings_cache[user_skills_key] = user_skill_embeddings
+            
+            # Check cache for job skills embeddings
+            job_skills_key = ",".join(sorted(job_skills_list))
+            if job_skills_key in st.session_state.skill_embeddings_cache:
+                job_skill_embeddings = st.session_state.skill_embeddings_cache[job_skills_key]
+                job_tokens = 0  # No API call needed
+            else:
+                job_skill_embeddings, job_tokens = self.embedding_gen.get_embeddings_batch(job_skills_list, batch_size=10)
+                if job_skill_embeddings:
+                    st.session_state.skill_embeddings_cache[job_skills_key] = job_skill_embeddings
             
             # Update token tracker if available
-            token_tracker = get_token_tracker()
-            if token_tracker:
-                token_tracker.add_embedding_tokens(user_tokens + job_tokens)
+            if user_tokens > 0 or job_tokens > 0:
+                token_tracker = get_token_tracker()
+                if token_tracker:
+                    token_tracker.add_embedding_tokens(user_tokens + job_tokens)
             
             if not user_skill_embeddings or not job_skill_embeddings:
                 # Fallback to string matching if embeddings fail
@@ -2058,7 +2121,6 @@ class SemanticJobSearch:
             
         except Exception as e:
             # Fallback to string-based matching if semantic matching fails
-            st.warning(f"⚠️ Semantic skill matching failed, using string matching: {e}")
             return self._calculate_skill_match_string_based(user_skills_list, job_skills_list)
     
     def _calculate_skill_match_string_based(self, user_skills_list, job_skills_list):
@@ -2865,6 +2927,12 @@ Important:
                 return None
         
         # SECOND PASS: Self-correction - verify dates and company names
+        # This pass is OPTIONAL and disabled by default for faster processing
+        # Set ENABLE_PROFILE_PASS2=true in environment to enable (adds 10-30s)
+        if not ENABLE_PROFILE_PASS2:
+            # Skip Pass 2 for faster processing - return Pass 1 result directly
+            return profile_data_pass1
+        
         # Extract only relevant sections (Experience and Education) to reduce token usage
         relevant_resume_sections = extract_relevant_resume_sections(resume_text)
         
@@ -2976,46 +3044,60 @@ def display_user_profile():
     
     if uploaded_file is not None:
         if st.button("🔍 Extract Information from Resume", type="primary", use_container_width=True):
-            with st.spinner("📖 Reading resume and extracting information..."):
-                # Extract text from resume
-                resume_text = extract_text_from_resume(uploaded_file)
+            # Use progress bar for better UX
+            progress_bar = st.progress(0, text="📖 Reading resume...")
+            
+            # Extract text from resume
+            resume_text = extract_text_from_resume(uploaded_file)
+            
+            if resume_text:
+                progress_bar.progress(25, text=f"✅ Read {len(resume_text)} characters")
+                # Store resume text for job matching
+                st.session_state.resume_text = resume_text
                 
-                if resume_text:
-                    # Store resume text for job matching
-                    st.session_state.resume_text = resume_text
-                    # Generate and store resume embedding (one-time, reusable for all searches)
-                    generate_and_store_resume_embedding(resume_text)
-                    st.success(f"✅ Extracted {len(resume_text)} characters from resume")
+                # Show extracted text preview
+                with st.expander("📝 Preview Extracted Text"):
+                    st.text(resume_text[:1000] + "..." if len(resume_text) > 1000 else resume_text)
+                
+                # Extract structured information
+                progress_bar.progress(35, text="🤖 Extracting profile with AI...")
+                profile_data = extract_profile_from_resume(resume_text)
+                
+                if profile_data:
+                    progress_bar.progress(75, text="📊 Finalizing profile...")
+                    # Update session state with extracted data
+                    st.session_state.user_profile = {
+                        'name': profile_data.get('name', ''),
+                        'email': profile_data.get('email', ''),
+                        'phone': profile_data.get('phone', ''),
+                        'location': profile_data.get('location', ''),
+                        'linkedin': profile_data.get('linkedin', ''),
+                        'portfolio': profile_data.get('portfolio', ''),
+                        'summary': profile_data.get('summary', ''),
+                        'experience': profile_data.get('experience', ''),
+                        'education': profile_data.get('education', ''),
+                        'skills': profile_data.get('skills', ''),
+                        'certifications': profile_data.get('certifications', '')
+                    }
                     
-                    # Show extracted text preview
-                    with st.expander("📝 Preview Extracted Text"):
-                        st.text(resume_text[:1000] + "..." if len(resume_text) > 1000 else resume_text)
+                    # Generate resume embedding AFTER profile extraction
+                    progress_bar.progress(90, text="🔗 Creating search embedding...")
+                    generate_and_store_resume_embedding(resume_text, st.session_state.user_profile)
                     
-                    # Extract structured information
-                    with st.spinner("🤖 Using AI to extract structured information..."):
-                        profile_data = extract_profile_from_resume(resume_text)
-                        
-                        if profile_data:
-                            # Update session state with extracted data
-                            st.session_state.user_profile = {
-                                'name': profile_data.get('name', ''),
-                                'email': profile_data.get('email', ''),
-                                'phone': profile_data.get('phone', ''),
-                                'location': profile_data.get('location', ''),
-                                'linkedin': profile_data.get('linkedin', ''),
-                                'portfolio': profile_data.get('portfolio', ''),
-                                'summary': profile_data.get('summary', ''),
-                                'experience': profile_data.get('experience', ''),
-                                'education': profile_data.get('education', ''),
-                                'skills': profile_data.get('skills', ''),
-                                'certifications': profile_data.get('certifications', '')
-                            }
-                            st.success("✅ Profile information extracted successfully! Review and edit below.")
-                            st.balloons()
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.warning("⚠️ Could not extract structured information. Please fill in manually.")
+                    progress_bar.progress(100, text="✅ Complete!")
+                    time.sleep(0.3)
+                    progress_bar.empty()
+                    
+                    st.success("✅ Profile information extracted successfully! Review and edit below.")
+                    st.balloons()
+                    time.sleep(0.5)
+                    st.rerun()
+                else:
+                    progress_bar.empty()
+                    st.warning("⚠️ Could not extract structured information. Please fill in manually.")
+            else:
+                progress_bar.empty()
+                st.error("❌ Could not read the resume file. Please try a different file.")
     
     st.markdown("---")
     
@@ -3633,31 +3715,58 @@ def render_sidebar():
         )
         
         if uploaded_file is not None:
-            with st.spinner("📖 Reading resume..."):
+            # Check if this is a new file upload (different from what's cached)
+            file_key = f"{uploaded_file.name}_{uploaded_file.size}"
+            current_cached_key = st.session_state.get('_last_uploaded_file_key')
+            
+            if current_cached_key != file_key:
+                # New file uploaded - process it
+                progress_bar = st.progress(0, text="📖 Reading resume...")
                 resume_text = extract_text_from_resume(uploaded_file)
+                
                 if resume_text:
+                    progress_bar.progress(30, text="✅ Resume read successfully")
                     st.session_state.resume_text = resume_text
-                    # Generate and store resume embedding (one-time, reusable for all searches)
-                    generate_and_store_resume_embedding(resume_text)
+                    st.session_state._last_uploaded_file_key = file_key
                     
-                    # Extract structured information
-                    with st.spinner("🤖 Extracting profile data..."):
-                        profile_data = extract_profile_from_resume(resume_text)
-                        if profile_data:
-                            st.session_state.user_profile = {
-                                'name': profile_data.get('name', ''),
-                                'email': profile_data.get('email', ''),
-                                'phone': profile_data.get('phone', ''),
-                                'location': profile_data.get('location', ''),
-                                'linkedin': profile_data.get('linkedin', ''),
-                                'portfolio': profile_data.get('portfolio', ''),
-                                'summary': profile_data.get('summary', ''),
-                                'experience': profile_data.get('experience', ''),
-                                'education': profile_data.get('education', ''),
-                                'skills': profile_data.get('skills', ''),
-                                'certifications': profile_data.get('certifications', '')
-                            }
-                            st.success("✅ Profile extracted!")
+                    # Extract structured information (Pass 1 only by default - faster!)
+                    progress_bar.progress(40, text="🤖 Extracting profile with AI...")
+                    profile_data = extract_profile_from_resume(resume_text)
+                    
+                    if profile_data:
+                        progress_bar.progress(80, text="📊 Finalizing profile...")
+                        st.session_state.user_profile = {
+                            'name': profile_data.get('name', ''),
+                            'email': profile_data.get('email', ''),
+                            'phone': profile_data.get('phone', ''),
+                            'location': profile_data.get('location', ''),
+                            'linkedin': profile_data.get('linkedin', ''),
+                            'portfolio': profile_data.get('portfolio', ''),
+                            'summary': profile_data.get('summary', ''),
+                            'experience': profile_data.get('experience', ''),
+                            'education': profile_data.get('education', ''),
+                            'skills': profile_data.get('skills', ''),
+                            'certifications': profile_data.get('certifications', '')
+                        }
+                        
+                        # Generate resume embedding AFTER profile extraction (uses profile for better embedding)
+                        progress_bar.progress(90, text="🔗 Creating search embedding...")
+                        generate_and_store_resume_embedding(resume_text, st.session_state.user_profile)
+                        
+                        progress_bar.progress(100, text="✅ Profile ready!")
+                        time.sleep(0.3)  # Brief pause to show completion
+                        progress_bar.empty()
+                        st.success("✅ Profile extracted!")
+                    else:
+                        progress_bar.empty()
+                        st.warning("⚠️ Could not extract profile. Please try again.")
+                else:
+                    progress_bar.empty()
+                    st.error("❌ Could not read the resume file.")
+            else:
+                # Same file already processed - show cached status
+                if st.session_state.user_profile.get('name'):
+                    st.success(f"✅ Using profile for: {st.session_state.user_profile.get('name', 'Unknown')}")
         
         # Search Criteria Section
         st.markdown("---")
@@ -3712,92 +3821,111 @@ def render_sidebar():
                     st.error("⚠️ Job scraper not configured. Please check your RAPIDAPI_KEY in Streamlit secrets.")
                     return
                 
-                with st.spinner("🔄 Fetching jobs from Indeed and analyzing..."):
-                    # Fetch jobs with cache
-                    jobs = fetch_jobs_with_cache(
-                        scraper,
-                        search_query,
-                        location="Hong Kong",
-                        max_rows=25,
-                        job_type="fulltime",
-                        country="hk",
-                        force_refresh=False
+                # Use progress bar for better UX
+                progress_bar = st.progress(0, text="🔍 Starting job search...")
+                
+                # Fetch jobs with cache
+                progress_bar.progress(10, text="📡 Fetching jobs from Indeed...")
+                jobs = fetch_jobs_with_cache(
+                    scraper,
+                    search_query,
+                    location="Hong Kong",
+                    max_rows=25,
+                    job_type="fulltime",
+                    country="hk",
+                    force_refresh=False
+                )
+                
+                if not jobs:
+                    progress_bar.empty()
+                    st.error("❌ No jobs found from Indeed. Please check your API configuration or try different search criteria.")
+                    return
+                
+                # Show how many jobs were fetched before filtering
+                total_fetched = len(jobs)
+                progress_bar.progress(30, text=f"✅ Found {total_fetched} jobs, applying filters...")
+                
+                # Apply domain filters (only if user specified domains)
+                if target_domains:
+                    jobs = filter_jobs_by_domains(jobs, target_domains)
+                
+                # Apply salary filter (only if user specified a salary > 0)
+                if salary_expectation > 0:
+                    jobs = filter_jobs_by_salary(jobs, salary_expectation)
+                
+                if not jobs:
+                    progress_bar.empty()
+                    st.warning(f"⚠️ No jobs match your filters. Found {total_fetched} jobs but none passed your criteria. Try reducing salary or selecting different domains.")
+                    return
+                
+                progress_bar.progress(40, text=f"📊 Analyzing {len(jobs)} matching jobs...")
+                
+                # Perform semantic matching
+                embedding_gen = get_embedding_generator()
+                if embedding_gen is None:
+                    progress_bar.empty()
+                    st.error("⚠️ Azure OpenAI is not configured. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
+                    return
+                
+                desired_matches = min(15, len(jobs))
+                jobs_to_index_limit = _determine_index_limit(len(jobs), desired_matches)
+                top_match_count = min(desired_matches, jobs_to_index_limit)
+                search_engine = SemanticJobSearch(embedding_gen)
+                
+                progress_bar.progress(50, text=f"🔗 Creating job embeddings ({jobs_to_index_limit} jobs)...")
+                search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
+                
+                # Use pre-computed resume embedding if available
+                resume_embedding = st.session_state.get('resume_embedding')
+                if not resume_embedding and st.session_state.resume_text:
+                    progress_bar.progress(70, text="🔗 Creating resume embedding...")
+                    resume_embedding = generate_and_store_resume_embedding(
+                        st.session_state.resume_text,
+                        st.session_state.user_profile if st.session_state.user_profile else None
                     )
-                    
-                    if not jobs:
-                        st.error("❌ No jobs found from Indeed. Please check your API configuration or try different search criteria.")
-                        return
-                    
-                    # Show how many jobs were fetched before filtering
-                    total_fetched = len(jobs)
-                    
-                    # Apply domain filters (only if user specified domains)
-                    if target_domains:
-                        jobs = filter_jobs_by_domains(jobs, target_domains)
-                    
-                    # Apply salary filter (only if user specified a salary > 0)
-                    if salary_expectation > 0:
-                        jobs = filter_jobs_by_salary(jobs, salary_expectation)
-                    
-                    if not jobs:
-                        st.warning(f"⚠️ No jobs match your filters. Found {total_fetched} jobs but none passed your criteria. Try reducing salary or selecting different domains.")
-                        return
-                    
-                    # Perform semantic matching
-                    embedding_gen = get_embedding_generator()
-                    if embedding_gen is None:
-                        st.error("⚠️ Azure OpenAI is not configured. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
-                        return
-                    
-                    desired_matches = min(15, len(jobs))
-                    jobs_to_index_limit = _determine_index_limit(len(jobs), desired_matches)
-                    top_match_count = min(desired_matches, jobs_to_index_limit)
-                    search_engine = SemanticJobSearch(embedding_gen)
-                    search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
-                    
-                    # Use pre-computed resume embedding if available
-                    resume_embedding = st.session_state.get('resume_embedding')
-                    if not resume_embedding and st.session_state.resume_text:
-                        resume_embedding = generate_and_store_resume_embedding(
-                            st.session_state.resume_text,
-                            st.session_state.user_profile if st.session_state.user_profile else None
-                        )
-                    
-                    # Fallback: build query string if no resume embedding available
-                    resume_query = None
-                    if not resume_embedding:
-                        if st.session_state.resume_text:
-                            resume_query = st.session_state.resume_text
-                            if st.session_state.user_profile.get('summary'):
-                                profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
-                                resume_query = f"{resume_query} {profile_data}"
-                        else:
-                            resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
-                    
-                    results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
-                    
-                    if results:
-                        # Calculate skill matches
-                        user_skills = st.session_state.user_profile.get('skills', '')
-                        for result in results:
-                            job_skills = result['job'].get('skills', [])
-                            skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
-                            result['skill_match_score'] = skill_score
-                            result['missing_skills'] = missing_skills
-                            
-                            # Calculate combined match score (weighted: 60% semantic, 40% skill)
-                            semantic_score = result.get('similarity_score', 0.0)
-                            combined_score = (semantic_score * 0.6) + (skill_score * 0.4)
-                            result['combined_match_score'] = combined_score
-                        
-                        # Sort results by combined match score (highest to lowest)
-                        results.sort(key=lambda x: x.get('combined_match_score', 0.0), reverse=True)
-                        
-                        st.session_state.matched_jobs = results
-                        st.session_state.dashboard_ready = True
-                        st.rerun()
+                
+                # Fallback: build query string if no resume embedding available
+                resume_query = None
+                if not resume_embedding:
+                    if st.session_state.resume_text:
+                        resume_query = st.session_state.resume_text
+                        if st.session_state.user_profile.get('summary'):
+                            profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
+                            resume_query = f"{resume_query} {profile_data}"
                     else:
-                        st.error("❌ No matching jobs found. Please try different filters.")
+                        resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
+                
+                progress_bar.progress(80, text="🎯 Finding best matches...")
+                results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
+                
+                if results:
+                    progress_bar.progress(90, text="📈 Calculating skill matches...")
+                    # Calculate skill matches (now uses fast string matching by default)
+                    user_skills = st.session_state.user_profile.get('skills', '')
+                    for i, result in enumerate(results):
+                        job_skills = result['job'].get('skills', [])
+                        skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
+                        result['skill_match_score'] = skill_score
+                        result['missing_skills'] = missing_skills
+                        
+                        # Calculate combined match score (weighted: 60% semantic, 40% skill)
+                        semantic_score = result.get('similarity_score', 0.0)
+                        combined_score = (semantic_score * 0.6) + (skill_score * 0.4)
+                        result['combined_match_score'] = combined_score
+                    
+                    # Sort results by combined match score (highest to lowest)
+                    results.sort(key=lambda x: x.get('combined_match_score', 0.0), reverse=True)
+                    
+                    progress_bar.progress(100, text="✅ Analysis complete!")
+                    time.sleep(0.3)
+                    progress_bar.empty()
+                    
+                    st.session_state.matched_jobs = results
+                    st.session_state.dashboard_ready = True
+                    st.rerun()
+                else:
+                    progress_bar.empty()
+                    st.error("❌ No matching jobs found. Please try different filters.")
         
         # Skill Matching Calculation Matrix
         display_skill_matching_matrix(st.session_state.user_profile)
