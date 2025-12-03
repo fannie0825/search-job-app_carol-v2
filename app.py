@@ -2297,7 +2297,7 @@ def get_job_scraper():
             st.error("⚠️ RAPIDAPI_KEY is required in secrets. Please configure it in your .streamlit/secrets.toml")
             return None
         
-        st.session_state.job_scraper = IndeedScraperAPI(RAPIDAPI_KEY, skip_if_quota_exceeded=False)
+        st.session_state.job_scraper = IndeedScraperAPI(RAPIDAPI_KEY)
     
     return st.session_state.job_scraper
 
