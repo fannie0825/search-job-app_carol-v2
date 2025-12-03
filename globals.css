@@ -29,9 +29,9 @@
   --color-info: #3B82F6;
   
   /* Background Colors */
-  --color-bg-main: #F3F4F6;
+  --color-bg-main: #f5f5f0; /* Cream main area */
   --color-bg-card: #FFFFFF;
-  --color-bg-sidebar: #1A2B45;
+  --color-bg-sidebar: #1e3a5f; /* Navy sidebar */
   
   /* Border Colors */
   --color-border-light: #E5E7EB;
@@ -43,9 +43,9 @@
 
 /* Dark Mode Variables */
 .dark {
-  --color-bg-main: #111827;
+  --color-bg-main: #1a1a1a; /* Dark gray main area */
   --color-bg-card: #1F2937;
-  --color-bg-sidebar: #0F172A;
+  --color-bg-sidebar: #1e3a5f; /* Navy sidebar (same as light mode) */
   --color-text-heading: #F9FAFB;
   --color-text-body: #F9FAFB;
   --color-text-muted: #D1D5DB;
@@ -90,6 +90,29 @@
 
 /* Component Styles */
 @layer components {
+  /* Sidebar - Navy background (#1e3a5f) */
+  .bg-bg-sidebar {
+    background-color: #1e3a5f !important;
+  }
+  
+  /* Main area - Cream background (#f5f5f0) in light mode */
+  .bg-bg-main {
+    background-color: #f5f5f0 !important;
+  }
+  
+  /* Main area - Dark background in dark mode */
+  .dark .bg-bg-main,
+  .dark .bg-dark-bg-main,
+  .bg-dark-bg-main.dark {
+    background-color: #1a1a1a !important;
+  }
+  
+  /* Ensure dark mode main background is applied correctly */
+  html.dark .bg-bg-main,
+  html.dark .bg-dark-bg-main {
+    background-color: #1a1a1a !important;
+  }
+  
   /* Card Component */
   .card {
     @apply bg-bg-card rounded-lg border border-gray-200 dark:border-dark-border shadow-card;

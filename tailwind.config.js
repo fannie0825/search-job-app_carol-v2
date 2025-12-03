@@ -12,9 +12,9 @@ module.exports = {
       colors: {
         // Primary Navy (Brand Base)
         navy: {
-          DEFAULT: '#1A2B45', // Deep Navy - Sidebar background
+          DEFAULT: '#1e3a5f', // Navy - Sidebar background
           light: '#2C3E50',    // Lighter Navy - Hover states
-          dark: '#0F172A',     // Darker Navy - Dark mode sidebar
+          dark: '#152a42',     // Darker Navy - Dark mode accents
         },
         // Accent Blue (Action/Highlight)
         accent: {
@@ -37,16 +37,16 @@ module.exports = {
         },
         // Background Colors
         bg: {
-          main: '#F3F4F6',     // Light Gray/Off-white - Main content area
+          main: '#f5f5f0',     // Cream - Main content area
           card: '#FFFFFF',     // White - Cards
-          sidebar: '#1A2B45',  // Deep Navy - Sidebar background
+          sidebar: '#1e3a5f',  // Navy - Sidebar background
         },
         // Dark Mode Colors
         dark: {
           bg: {
-            main: '#111827',   // Very Dark Gray - Main background
+            main: '#1a1a1a',   // Dark Gray - Main background
             card: '#1F2937',   // Dark Gray - Cards
-            sidebar: '#0F172A', // Darker Navy - Sidebar (optional, can use navy.DEFAULT)
+            sidebar: '#1e3a5f', // Navy - Sidebar (same as light mode)
           },
           text: {
             primary: '#F9FAFB', // White - Primary text
