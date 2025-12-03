@@ -1,7 +1,10 @@
 import warnings
 import os
 warnings.filterwarnings('ignore')
+# Streamlit Cloud optimization: Set log level to error for production
 os.environ['STREAMLIT_LOG_LEVEL'] = 'error'
+# Streamlit Cloud: Disable telemetry
+os.environ['STREAMLIT_BROWSER_GATHER_USAGE_STATS'] = 'false'
 
 import streamlit as st
 import requests

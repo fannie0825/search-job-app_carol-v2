@@ -17,46 +17,45 @@ secondaryBackgroundColor = "#262626" # Medium dark grey for sidebar/containers
 textColor = "#F4F4F4"               # Off-white text
 font = "sans serif"                 # Streamlit default (Inter/Roboto loaded via CSS)
 
-# Additional Streamlit Configuration
+# Streamlit Cloud Configuration
+# Optimized for Streamlit Cloud deployment
 [server]
-# Enable file watcher for development
-fileWatcherType = "auto"
-# Enable CORS (important for Streamlit Cloud)
+# File watcher disabled for Streamlit Cloud (not needed)
+fileWatcherType = "none"
+# CORS enabled for Streamlit Cloud
 enableCORS = true
-# Enable XSRF protection
+# XSRF protection enabled for security
 enableXsrfProtection = true
-# Port configuration (Streamlit Cloud handles this automatically)
-port = 8501
-# Address binding
-address = "0.0.0.0"
-# Maximum upload size (in MB)
+# Port and address are handled automatically by Streamlit Cloud
+# Maximum upload size (in MB) - optimized for resume uploads
 maxUploadSize = 200
-# Maximum message size (in MB)
+# Maximum message size (in MB) - for large API responses
 maxMessageSize = 200
-# Enable WebSocket compression
+# WebSocket compression enabled for better performance on Streamlit Cloud
 enableWebsocketCompression = true
-# Run on save (development only)
+# Headless mode for Streamlit Cloud
+headless = true
+# Run on save disabled (not applicable for Streamlit Cloud)
 runOnSave = false
 
 # Browser configuration
 [browser]
-# Gather usage stats (optional - set to false to disable)
+# Disable usage stats collection
 gatherUsageStats = false
-# Server address (Streamlit Cloud handles this automatically - do not set for cloud deployment)
-# serverAddress = "localhost"  # Only for local development - commented out for Streamlit Cloud
+# Server address is automatically set by Streamlit Cloud
 
 # UI Configuration
 [ui]
-# Hide the hamburger menu (optional - set to true to show)
+# Show top bar and sidebar navigation
 hideTopBar = false
 hideSidebarNav = false
 
 # Global Configuration
 [global]
-# Development mode settings
+# Production mode (not development)
 developmentMode = false
 
 # Logger Configuration
 [logger]
-# Log level: ERROR, WARNING, INFO, DEBUG
+# Log level: ERROR only for production on Streamlit Cloud
 level = "error"
