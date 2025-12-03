@@ -4440,12 +4440,20 @@ def display_refine_results_section(matched_jobs, user_profile):
                     st.error("❌ No jobs found. Please try different filters.")
 
 def display_ranked_matches_table(matched_jobs, user_profile):
-    """Display Smart Ranked Matches Table with interactive dataframe"""
+    """Display Smart Ranked Matches Table with interactive dataframe
+    
+    Features:
+    - Fixed Rank column (position 1, doesn't move when scrolling)
+    - Click any row to expand and see full job details
+    - Match score breakdown with detailed analysis
+    - Rank is based on combined match score (60% semantic + 40% skill)
+    """
     if not matched_jobs:
         return
     
     st.markdown("---")
     st.markdown("### Top AI-Ranked Opportunities")
+    st.caption("💡 **Tip:** Click any row to expand and see full job description, match analysis, and application copilot")
     
     # Ensure all results have skill match scores calculated
     user_skills = user_profile.get('skills', '')
@@ -4510,6 +4518,7 @@ def display_ranked_matches_table(matched_jobs, user_profile):
         missing_critical_skill = missing_critical[0] if missing_critical else "None"
         
         table_data.append({
+            'Rank': i + 1,  # Fixed rank index (1-based)
             'Match Score': int(match_score * 100),
             'Job Title': job['title'],
             'Company': job['company'],
@@ -4523,16 +4532,23 @@ def display_ranked_matches_table(matched_jobs, user_profile):
     
     # Configure column display
     column_config = {
+        'Rank': st.column_config.NumberColumn(
+            'Rank',
+            help='Job ranking position (fixed, does not change when sorting)',
+            width='small',
+            format='%d'
+        ),
         'Match Score': st.column_config.ProgressColumn(
-            'Skill Match Score',
-            help='Percentage of required skills you match (jobs ranked by this score)',
+            'Match Score',
+            help='Combined match score: 60% semantic similarity + 40% skill overlap (jobs ranked by this)',
             min_value=0,
             max_value=100,
             format='%d%%'
         ),
         'Job Title': st.column_config.TextColumn(
             'Job Title',
-            width='medium'
+            width='medium',
+            help='Click to select and view full details'
         ),
         'Company': st.column_config.TextColumn(
             'Company',
@@ -4544,7 +4560,7 @@ def display_ranked_matches_table(matched_jobs, user_profile):
         ),
         'Key Matching Skills': st.column_config.ListColumn(
             'Key Matching Skills',
-            help='Skills you have that match this role'
+            help='Top skills you have that match this role'
         ),
         'Missing Critical Skill': st.column_config.TextColumn(
             'Missing Critical Skill',
@@ -4558,9 +4574,16 @@ def display_ranked_matches_table(matched_jobs, user_profile):
         )
     }
     
+    # Set column order with Rank first (fixed position - won't move when table scrolls)
+    # Note: Rank is based on combined match score and remains fixed in position 1
+    column_order = ['Rank', 'Match Score', 'Job Title', 'Company', 'Location', 'Key Matching Skills', 'Missing Critical Skill']
+    
+    # Reorder dataframe to ensure Rank is first
+    df_display = df[column_order].copy()
+    
     # Display dataframe with selection
     selected_rows = st.dataframe(
-        df,
+        df_display,
         column_config=column_config,
         hide_index=True,
         use_container_width=True,
@@ -4607,26 +4630,64 @@ def display_match_breakdown(matched_jobs, user_profile):
     else:
         recruiter_note = text_gen.generate_recruiter_note(job, user_profile, semantic_score, skill_score)
     
-    # Expander title
-    expander_title = f"Deep Dive: {job['title']} at {job['company']}"
+    # Get rank position (1-based)
+    rank_position = st.session_state.selected_job_index + 1 if st.session_state.selected_job_index is not None else 0
+    
+    # Expander title with rank
+    expander_title = f"📋 Rank #{rank_position}: {job['title']} at {job['company']}"
     
     with st.expander(expander_title, expanded=True):
+        # Full Job Description Section
+        st.markdown("#### 📝 Full Job Description")
+        description_text = job.get('description', 'No description available.')
+        if len(description_text) > 10000:
+            st.info(f"📄 Full description ({len(description_text):,} characters)")
+            st.text_area(
+                "Job Description",
+                value=description_text,
+                height=400,
+                key=f"job_desc_{st.session_state.selected_job_index}",
+                label_visibility="collapsed"
+            )
+        else:
+            st.markdown(description_text)
+        
+        st.markdown("---")
+        
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.markdown("#### Why this is a fit")
+            st.markdown("#### 🎯 Match Analysis & Why This is a Fit")
             
-            # Score breakdown
+            # Score breakdown with more detail
             st.markdown(f"""
-            **🎯 Match Score (Ranking Factor):** {skill_score:.0%}  
-            This is how jobs are ranked. Based on skill overlap: {matched_skills_count}/{total_required} required skills matched.
-            
-            **📊 Contextual Alignment:** {semantic_score:.0%}  
-            Your experience contextually aligns with role requirements (informational only).
+            **Match Score Breakdown:**
+            - **🎯 Skill Match Score (Ranking Factor):** {skill_score:.0%} ({matched_skills_count}/{total_required} skills matched)
+              - This is the primary ranking factor. Jobs are sorted by this score.
+            - **📊 Semantic Similarity Score:** {semantic_score:.0%}
+              - Measures how well your experience contextually aligns with role requirements.
+            - **⚖️ Combined Match Score:** {(semantic_score * 0.6 + skill_score * 0.4):.0%}
+              - Weighted combination: 60% semantic + 40% skill overlap
             """)
             
+            # Show matched skills
+            if matched_skills_count > 0:
+                matched_skills_display = []
+                for js in job_skills_list:
+                    if any(us in js or js in us for us in user_skills_list):
+                        matched_skills_display.append(js)
+                        if len(matched_skills_display) >= 10:
+                            break
+                if matched_skills_display:
+                    st.success(f"✅ **Matched Skills:** {', '.join(matched_skills_display[:10])}")
+            
+            # Show missing skills
+            if missing_skills:
+                st.warning(f"⚠️ **Missing Skills:** {', '.join(missing_skills[:5])}")
+            
             # Recruiter Note (AI-generated)
-            st.info(f"**Recruiter Note:** {recruiter_note}")
+            st.markdown("---")
+            st.info(f"**🤖 AI Recruiter Analysis:**\n\n{recruiter_note}")
         
         with col2:
             st.markdown("#### Application Copilot")
