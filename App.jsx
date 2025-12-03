@@ -1,48 +1,47 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import DashboardLayout from './components/DashboardLayout';
 import './globals.css';
 
 function App() {
-  const [darkMode, setDarkMode] = useState(false);
-
   useEffect(() => {
-    // Check for saved theme preference or default to light mode
-    const savedTheme = localStorage.getItem('theme');
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    // Function to update theme based on system preference
+    const updateTheme = () => {
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      
+      if (prefersDark) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    };
+
+    // Set initial theme
+    updateTheme();
+
+    // Listen for changes in system theme preference
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     
-    if (savedTheme === 'dark' || (!savedTheme && prefersDark)) {
-      setDarkMode(true);
-      document.documentElement.classList.add('dark');
+    // Modern browsers support addEventListener
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', updateTheme);
     } else {
-      document.documentElement.classList.remove('dark');
+      // Fallback for older browsers
+      mediaQuery.addListener(updateTheme);
     }
+
+    // Cleanup listener on unmount
+    return () => {
+      if (mediaQuery.removeEventListener) {
+        mediaQuery.removeEventListener('change', updateTheme);
+      } else {
+        mediaQuery.removeListener(updateTheme);
+      }
+    };
   }, []);
 
-  const toggleDarkMode = () => {
-    const newDarkMode = !darkMode;
-    setDarkMode(newDarkMode);
-    
-    if (newDarkMode) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('theme', 'dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('theme', 'light');
-    }
-  };
-
   return (
-    <div className={darkMode ? 'dark' : ''}>
+    <div>
       <DashboardLayout />
-      
-      {/* Dark Mode Toggle Button (optional, can be moved to header) */}
-      <button
-        onClick={toggleDarkMode}
-        className="fixed bottom-4 right-4 p-3 bg-accent text-white rounded-full shadow-lg hover:bg-accent-dark transition-colors z-50"
-        aria-label="Toggle dark mode"
-      >
-        {darkMode ? '☀️' : '🌙'}
-      </button>
     </div>
   );
 }
