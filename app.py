@@ -261,51 +261,63 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Initialize theme in session state
-if 'theme_mode' not in st.session_state:
-    st.session_state.theme_mode = "Light"
+# Theme will be automatically detected from system preferences via JavaScript
+# CSS uses attribute selectors to respond to data-theme attribute
 
-# Get theme mode from session state
-theme_mode = st.session_state.theme_mode
-
-# Dynamic CSS based on theme
-if theme_mode == "Dark":
-    # Dark mode colors
-    bg_color = "#161616"
-    secondary_bg = "#262626"
-    text_color = "#F4F4F4"
-    primary_color = "#4589FF"
-    card_bg = "#262626"
-    border_color = "#3D3D3D"
-    hover_bg = "#333333"
-else:
-    # Light mode colors
-    bg_color = "#FFFFFF"
-    secondary_bg = "#F4F7FC"
-    text_color = "#161616"
-    primary_color = "#0F62FE"
-    card_bg = "#FFFFFF"
-    border_color = "#E0E0E0"
-    hover_bg = "#F0F0F0"
-
-st.markdown(f"""
+st.markdown("""
 <style>
+    /* CareerLens Design System - CSS Variables */
+    /* Light mode (default) */
+    :root {{
+        --primary-accent: #0F62FE;
+        --action-accent: #0F62FE;
+        --bg-main: #FFFFFF;
+        --bg-container: #F4F7FC;
+        --card-bg: #FFFFFF;
+        --text-primary: #161616;
+        --text-secondary: #161616;
+        --text-muted: #161616;
+        --border-color: #E0E0E0;
+        --hover-bg: #F0F0F0;
+        --success-green: #10B981;
+        --warning-amber: #F59E0B;
+        --error-red: #EF4444;
+        --navy-deep: #1e3a5f;
+        --navy-light: #2C3E50;
+    }}
+    
+    /* Dark mode override */
+    [data-theme="dark"],
+    html[data-theme="dark"],
+    html[data-theme="dark"] :root {{
+        --primary-accent: #4589FF;
+        --action-accent: #4589FF;
+        --bg-main: #161616;
+        --bg-container: #262626;
+        --card-bg: #262626;
+        --text-primary: #F4F4F4;
+        --text-secondary: #F4F4F4;
+        --text-muted: #F4F4F4;
+        --border-color: #3D3D3D;
+        --hover-bg: #333333;
+    }}
+    
     /* Global Styling */
     .stApp {{
-        background-color: {bg_color};
-        color: {text_color};
+        background-color: var(--bg-main);
+        color: var(--text-primary);
     }}
     
     /* Sidebar Styling */
     [data-testid="stSidebar"] {{
-        background-color: {secondary_bg};
+        background-color: var(--bg-container);
         padding: 2rem 1rem;
     }}
     
     /* Card Styling */
     .metric-card {{
-        background-color: {card_bg};
-        border: 1px solid {border_color};
+        background-color: var(--card-bg);
+        border: 1px solid var(--border-color);
         border-radius: 12px;
         padding: 24px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.1);
@@ -314,7 +326,7 @@ st.markdown(f"""
     
     /* Button Styling */
     .stButton > button {{
-        background-color: {primary_color};
+        background-color: var(--primary-accent);
         color: white;
         border-radius: 8px;
         border: none;
@@ -324,7 +336,7 @@ st.markdown(f"""
     }}
     
     .stButton > button:hover {{
-        background-color: {primary_color};
+        background-color: var(--primary-accent);
         opacity: 0.8;
         transform: translateY(-2px);
         box-shadow: 0 4px 12px rgba(15, 98, 254, 0.3);
@@ -333,8 +345,8 @@ st.markdown(f"""
     /* Secondary Button */
     .secondary-button {{
         background-color: transparent;
-        color: {primary_color};
-        border: 1px solid {primary_color};
+        color: var(--primary-accent);
+        border: 1px solid var(--primary-accent);
         border-radius: 8px;
         padding: 0.5rem 1rem;
         font-weight: 500;
@@ -342,45 +354,45 @@ st.markdown(f"""
     }}
     
     .secondary-button:hover {{
-        background-color: {primary_color};
+        background-color: var(--primary-accent);
         color: white;
     }}
     
     /* Table Styling */
     .dataframe {{
-        background-color: {card_bg};
-        border: 1px solid {border_color};
+        background-color: var(--card-bg);
+        border: 1px solid var(--border-color);
         border-radius: 12px;
         overflow: hidden;
     }}
     
     .dataframe th {{
-        background-color: {secondary_bg};
-        color: {text_color};
+        background-color: var(--bg-container);
+        color: var(--text-primary);
         font-weight: 600;
         padding: 12px;
-        border-bottom: 2px solid {border_color};
+        border-bottom: 2px solid var(--border-color);
     }}
     
     .dataframe td {{
         padding: 12px;
-        border-bottom: 1px solid {border_color};
+        border-bottom: 1px solid var(--border-color);
     }}
     
     .dataframe tr:hover {{
-        background-color: {hover_bg};
+        background-color: var(--hover-bg);
     }}
     
     /* Progress Bar */
     .progress-bar {{
-        background-color: {border_color};
+        background-color: var(--border-color);
         border-radius: 10px;
         height: 8px;
         overflow: hidden;
     }}
     
     .progress-fill {{
-        background-color: {primary_color};
+        background-color: var(--primary-accent);
         height: 100%;
         border-radius: 10px;
         transition: width 0.3s ease;
@@ -388,8 +400,8 @@ st.markdown(f"""
     
     /* Upload Section */
     [data-testid="stFileUploader"] {{
-        background-color: {card_bg};
-        border: 2px dashed {border_color};
+        background-color: var(--card-bg);
+        border: 2px dashed var(--border-color);
         border-radius: 12px;
         padding: 2rem;
     }}
@@ -401,7 +413,7 @@ st.markdown(f"""
     
     /* Header Styling */
     h1, h2, h3 {{
-        color: {text_color};
+        color: var(--text-primary);
     }}
     
     h1 {{
@@ -433,13 +445,13 @@ st.markdown(f"""
     .metric-value {{
         font-size: 28px;
         font-weight: 700;
-        color: {text_color};
+        color: var(--text-primary);
     }}
     
     /* Expandable Section */
     .expander-content {{
-        background-color: {secondary_bg};
-        border-left: 4px solid {primary_color};
+        background-color: var(--bg-container);
+        border-left: 4px solid var(--primary-accent);
         padding: 16px;
         margin: 8px 0;
         border-radius: 4px;
@@ -448,22 +460,22 @@ st.markdown(f"""
     /* Input Fields */
     .stTextInput > div > div > input,
     .stSelectbox > div > div > select {{
-        background-color: {card_bg};
-        color: {text_color};
-        border: 1px solid {border_color};
+        background-color: var(--card-bg);
+        color: var(--text-primary);
+        border: 1px solid var(--border-color);
         border-radius: 8px;
     }}
     
     /* Multi-select */
     .stMultiSelect {{
-        background-color: {card_bg};
+        background-color: var(--card-bg);
         border-radius: 8px;
     }}
     
     /* Badge/Tag Styling */
     .fit-type-badge {{
-        background-color: {secondary_bg};
-        color: {text_color};
+        background-color: var(--bg-container);
+        color: var(--text-primary);
         padding: 4px 12px;
         border-radius: 16px;
         font-size: 12px;
@@ -482,52 +494,14 @@ st.markdown(f"""
     .logo-text {{
         font-size: 24px;
         font-weight: 700;
-        color: {text_color};
+        color: var(--text-primary);
     }}
     
     /* Divider */
     hr {{
         border: none;
-        border-top: 1px solid {border_color};
+        border-top: 1px solid var(--border-color);
         margin: 2rem 0;
-    }}
-    
-    /* CareerLens Design System - CSS Variables for compatibility */
-    :root {{
-        --primary-accent: {primary_color};
-        --action-accent: {primary_color};
-        --bg-main: {bg_color};
-        --bg-container: {secondary_bg};
-        --text-primary: {text_color};
-        --text-secondary: {text_color};
-        --text-muted: {text_color};
-        --success-green: #10B981;
-        --warning-amber: #F59E0B;
-        --error-red: #EF4444;
-        --navy-deep: #1e3a5f;
-        --navy-light: #2C3E50;
-    }}
-    
-    /* Dark Mode Override */
-    [data-theme="dark"] {{
-        --primary-accent: {primary_color};
-        --action-accent: {primary_color};
-        --bg-main: {bg_color};
-        --bg-container: {secondary_bg};
-        --text-primary: {text_color};
-        --text-secondary: {text_color};
-        --text-muted: {text_color};
-    }}
-    
-    html[data-theme="dark"],
-    html[data-theme="dark"] :root {{
-        --primary-accent: {primary_color};
-        --action-accent: {primary_color};
-        --bg-main: {bg_color};
-        --bg-container: {secondary_bg};
-        --text-primary: {text_color};
-        --text-secondary: {text_color};
-        --text-muted: {text_color};
     }}
     
     /* Main Header */
@@ -3795,23 +3769,39 @@ def display_resume_generator():
 def render_sidebar():
     """Render CareerLens sidebar with resume upload, market filters, and analyze button"""
     with st.sidebar:
-        # Theme Toggle
-        theme_mode = st.radio("Theme", ["Light", "Dark"], horizontal=True, key="theme_radio")
-        if theme_mode != st.session_state.theme_mode:
-            st.session_state.theme_mode = theme_mode
-            st.rerun()
-        
-        # Apply theme via JavaScript
-        theme_script = f"""
+        # Auto-detect and apply theme based on system preferences
+        theme_script = """
         <script>
-            const theme = "{theme_mode}";
-            if (theme === "Dark") {{
-                document.documentElement.setAttribute('data-theme', 'dark');
-                document.querySelector('.stApp').setAttribute('data-theme', 'dark');
-            }} else {{
-                document.documentElement.removeAttribute('data-theme');
-                document.querySelector('.stApp').removeAttribute('data-theme');
-            }}
+            // Function to update theme based on system preference
+            function updateTheme() {
+                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                
+                if (prefersDark) {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                    if (document.querySelector('.stApp')) {
+                        document.querySelector('.stApp').setAttribute('data-theme', 'dark');
+                    }
+                } else {
+                    document.documentElement.removeAttribute('data-theme');
+                    if (document.querySelector('.stApp')) {
+                        document.querySelector('.stApp').removeAttribute('data-theme');
+                    }
+                }
+            }
+            
+            // Set initial theme
+            updateTheme();
+            
+            // Listen for changes in system theme preference
+            const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+            
+            // Modern browsers support addEventListener
+            if (mediaQuery.addEventListener) {
+                mediaQuery.addEventListener('change', updateTheme);
+            } else {
+                // Fallback for older browsers
+                mediaQuery.addListener(updateTheme);
+            }
         </script>
         """
         st.markdown(theme_script, unsafe_allow_html=True)
