@@ -1697,13 +1697,9 @@ class RateLimiter:
         self.request_times.append(time.time())
 
 
-class QuotaExceededError(Exception):
-    """Raised when API quota is exceeded (429 or quota-related errors)."""
-    pass
-
-
 class IndeedScraperAPI:
-    def __init__(self, api_key, skip_if_quota_exceeded=False):
+    """Job scraper using Indeed Scraper API via RapidAPI."""
+    def __init__(self, api_key):
         self.api_key = api_key
         self.url = "https://indeed-scraper-api.p.rapidapi.com/api/job"
         self.headers = {
@@ -1713,7 +1709,6 @@ class IndeedScraperAPI:
         }
         # Initialize rate limiter
         self.rate_limiter = RateLimiter(RAPIDAPI_MAX_REQUESTS_PER_MINUTE)
-        self.skip_if_quota_exceeded = skip_if_quota_exceeded
     
     def search_jobs(self, query, location="Hong Kong", max_rows=15, job_type="fulltime", country="hk"):
         payload = {
@@ -1753,26 +1748,11 @@ class IndeedScraperAPI:
                 return jobs
             else:
                 if response:
-                    # api_call_with_retry already handled 429 retries, so if we still get 429 here,
-                    # it means all retries were exhausted
                     if response.status_code == 429:
-                        error_msg = "🚫 Indeed API quota exceeded (429). Switching to LinkedIn..."
-                        if self.skip_if_quota_exceeded:
-                            st.warning(error_msg)
-                            raise QuotaExceededError("Indeed API quota exceeded")
-                        else:
-                            st.error("🚫 Rate limit reached for job search API after retries. Please wait a few minutes and try again.")
+                        st.error("🚫 Rate limit reached for Indeed API. Please wait a few minutes and try again.")
                     else:
                         error_detail = response.text[:200] if response.text else "No error details"
-                        # Check if error indicates quota exceeded
-                        if "quota" in error_detail.lower() or "exceeded" in error_detail.lower():
-                            if self.skip_if_quota_exceeded:
-                                st.warning("🚫 Indeed API quota exceeded. Switching to LinkedIn...")
-                                raise QuotaExceededError("Indeed API quota exceeded")
-                            else:
-                                st.error(f"API Error: {response.status_code} - {error_detail}")
-                        else:
-                            st.error(f"API Error: {response.status_code} - {error_detail}")
+                        st.error(f"API Error: {response.status_code} - {error_detail}")
                 return []
                 
         except Exception as e:
@@ -1812,220 +1792,6 @@ class IndeedScraperAPI:
         except:
             return None
 
-class LinkedInJobsAPI:
-    """Alternative job source using LinkedIn Jobs API via RapidAPI as fallback."""
-    def __init__(self, api_key):
-        self.api_key = api_key
-        self.base_url = "https://linkedin-job-search-api.p.rapidapi.com"
-        self.headers = {
-            'x-rapidapi-key': api_key,
-            'x-rapidapi-host': 'linkedin-job-search-api.p.rapidapi.com'
-        }
-        # Initialize rate limiter (shares the same limit as Indeed API)
-        self.rate_limiter = RateLimiter(RAPIDAPI_MAX_REQUESTS_PER_MINUTE)
-    
-    def search_jobs(self, query, location="Hong Kong", max_rows=15, job_type="fulltime", country="hk"):
-        """Search jobs from LinkedIn Jobs API."""
-        try:
-            # Enforce rate limiting before making the request
-            self.rate_limiter.wait_if_needed()
-            
-            # Build query parameters
-            # The API endpoint /active-jb-1h supports offset and description_type
-            # We'll need to fetch multiple pages if needed to get max_rows
-            all_jobs = []
-            offset = 0
-            page_size = min(max_rows, 25)  # Fetch in batches
-            
-            while len(all_jobs) < max_rows:
-                # Build endpoint with query parameters
-                # Try to include query and location if API supports them
-                params = {
-                    "offset": offset,
-                    "description_type": "text"
-                }
-                # Add query/location if provided (API might support these)
-                if query:
-                    params["query"] = query
-                if location:
-                    params["location"] = location
-                
-                # Build query string with URL encoding
-                from urllib.parse import urlencode
-                query_string = urlencode(params)
-                endpoint = f"/active-jb-1h?{query_string}"
-                
-                def make_request():
-                    return requests.get(f"{self.base_url}{endpoint}", headers=self.headers, timeout=60)
-                
-                response = api_call_with_retry(make_request, max_retries=2, initial_delay=2)
-                
-                if response and response.status_code == 200:
-                    try:
-                        data = response.json()
-                        
-                        # Parse response - could be list or dict
-                        job_list = []
-                        if isinstance(data, list):
-                            job_list = data
-                        elif isinstance(data, dict):
-                            # Try common response formats
-                            if 'jobs' in data:
-                                job_list = data['jobs']
-                            elif 'data' in data:
-                                job_list = data['data']
-                            elif 'results' in data:
-                                job_list = data['results']
-                            else:
-                                # If it's a single job object, wrap it
-                                job_list = [data] if data else []
-                        
-                        # Filter jobs by query/location if possible
-                        filtered_jobs = self._filter_jobs(job_list, query, location)
-                        
-                        for job_data in filtered_jobs:
-                            if len(all_jobs) >= max_rows:
-                                break
-                            parsed_job = self._parse_job(job_data)
-                            if parsed_job:
-                                all_jobs.append(parsed_job)
-                        
-                        # If we got fewer jobs than requested, try next page
-                        if len(job_list) < page_size or len(all_jobs) >= max_rows:
-                            break
-                        
-                        offset += page_size
-                        
-                    except (json.JSONDecodeError, KeyError, TypeError) as e:
-                        st.warning(f"⚠️ Error parsing LinkedIn API response: {str(e)[:100]}")
-                        break
-                else:
-                    # If we get an error, stop trying
-                    # api_call_with_retry already handled 429 retries
-                    if response:
-                        if response.status_code == 429:
-                            st.warning("⚠️ LinkedIn API rate limit reached after retries. Returning partial results.")
-                        else:
-                            st.warning(f"⚠️ LinkedIn API error: {response.status_code}")
-                    break
-            
-            return all_jobs[:max_rows]
-                
-        except Exception as e:
-            # Log error but don't fail completely
-            st.warning(f"⚠️ LinkedIn API error: {str(e)[:100]}")
-            return []
-    
-    def _filter_jobs(self, job_list, query, location):
-        """Filter jobs by query and location if the API doesn't support it natively."""
-        if not query and not location:
-            return job_list
-        
-        filtered = []
-        query_lower = query.lower() if query else ""
-        location_lower = location.lower() if location else ""
-        
-        for job in job_list:
-            # Check if job matches query (in title, description, or company)
-            matches_query = True
-            if query_lower:
-                title = str(job.get('title', '') or job.get('job_title', '')).lower()
-                company = str(job.get('company', '') or job.get('company_name', '')).lower()
-                description = str(job.get('description', '') or job.get('job_description', '')).lower()
-                matches_query = (query_lower in title or query_lower in company or query_lower in description)
-            
-            # Check if job matches location
-            matches_location = True
-            if location_lower:
-                job_location = str(job.get('location', '') or job.get('job_location', '')).lower()
-                matches_location = location_lower in job_location or "remote" in job_location or "anywhere" in job_location
-            
-            if matches_query and matches_location:
-                filtered.append(job)
-        
-        # If filtering removed all jobs, return original list (API might not support filtering)
-        return filtered if filtered else job_list
-    
-    def _parse_job(self, job_data):
-        """Parse LinkedIn job data into standard format."""
-        try:
-            return {
-                'title': job_data.get('title') or job_data.get('job_title', 'N/A'),
-                'company': job_data.get('company') or job_data.get('company_name', 'N/A'),
-                'location': job_data.get('location') or job_data.get('job_location', 'Hong Kong'),
-                'description': job_data.get('description') or job_data.get('job_description', 'No description')[:50000],
-                'salary': job_data.get('salary', 'Not specified'),
-                'job_type': job_data.get('job_type', 'Full-time'),
-                'url': job_data.get('job_url') or job_data.get('url', '#'),
-                'posted_date': job_data.get('posted_date') or job_data.get('date', 'Recently'),
-                'benefits': job_data.get('benefits', [])[:5],
-                'skills': job_data.get('skills', [])[:10],
-                'company_rating': job_data.get('company_rating', {}).get('rating', 0) if isinstance(job_data.get('company_rating'), dict) else 0,
-                'is_remote': job_data.get('is_remote', False) or job_data.get('remote', False)
-            }
-        except:
-            return None
-
-class MultiSourceJobAggregator:
-    """Aggregates jobs from multiple sources with failover mechanism."""
-    def __init__(self, primary_source, fallback_source=None, prefer_linkedin=False):
-        self.primary_source = primary_source
-        self.fallback_source = fallback_source
-        self.prefer_linkedin = prefer_linkedin
-        self.last_error = None
-        self.indeed_quota_exceeded = False  # Track if Indeed quota is permanently exceeded
-    
-    def search_jobs(self, query, location="Hong Kong", max_rows=15, job_type="fulltime", country="hk"):
-        """Search jobs from primary source, fallback to secondary if primary fails."""
-        all_jobs = []
-        sources_used = []
-        
-        # If Indeed quota is exceeded or LinkedIn is preferred, skip Indeed entirely
-        skip_indeed = self.indeed_quota_exceeded or self.prefer_linkedin or (self.primary_source is None)
-        
-        # Try primary source (Indeed) unless we're skipping it
-        if not skip_indeed and self.primary_source:
-            try:
-                jobs = self.primary_source.search_jobs(query, location, max_rows, job_type, country)
-                if jobs:
-                    all_jobs.extend(jobs)
-                    sources_used.append("Indeed")
-            except QuotaExceededError:
-                # Indeed quota exceeded - mark it and skip Indeed for future requests
-                self.indeed_quota_exceeded = True
-                st.warning("⚠️ Indeed API quota exceeded. Using LinkedIn only for this session.")
-                skip_indeed = True
-            except Exception as e:
-                self.last_error = f"Primary source error: {str(e)}"
-                st.warning(f"⚠️ Primary job source unavailable: {str(e)[:100]}")
-        
-        # Try fallback source (LinkedIn) if primary failed, returned insufficient results, or we're skipping Indeed
-        if self.fallback_source and (skip_indeed or len(all_jobs) < max_rows // 2):
-            try:
-                fallback_jobs = self.fallback_source.search_jobs(query, location, max_rows - len(all_jobs), job_type, country)
-                if fallback_jobs:
-                    all_jobs.extend(fallback_jobs)
-                    sources_used.append("LinkedIn")
-            except Exception as e:
-                if not self.last_error:
-                    self.last_error = f"Fallback source error: {str(e)}"
-                st.warning(f"⚠️ LinkedIn API error: {str(e)[:100]}")
-        
-        # Remove duplicates based on title + company
-        seen = set()
-        unique_jobs = []
-        for job in all_jobs:
-            key = (job.get('title', '').lower(), job.get('company', '').lower())
-            if key not in seen:
-                seen.add(key)
-                unique_jobs.append(job)
-        
-        if sources_used:
-            st.info(f"📊 Jobs aggregated from: {', '.join(sources_used)} ({len(unique_jobs)} unique jobs)")
-        elif not all_jobs:
-            st.error("❌ No jobs found from any source. Please check your API configurations.")
-        
-        return unique_jobs[:max_rows]
 
 class TokenUsageTracker:
     """Tracks token usage and costs for API calls."""
@@ -2521,64 +2287,19 @@ def generate_and_store_resume_embedding(resume_text, user_profile=None):
     return None
 
 def get_job_scraper():
-    """Get multi-source job aggregator with failover.
+    """Get Indeed job scraper.
     
-    Uses RAPIDAPI_KEY for both primary (Indeed) and fallback (LinkedIn) sources.
-    If LINKEDIN_API_KEY is set, it will be used for the fallback source instead.
-    Both APIs typically use the same RapidAPI key if subscribed to both.
-    
-    Configuration options:
-    - USE_LINKEDIN_ONLY: If True, skip Indeed entirely and use LinkedIn only
-    - SKIP_INDEED_IF_QUOTA_EXCEEDED: If True, automatically skip Indeed when quota is exceeded
+    Uses RAPIDAPI_KEY to fetch jobs from Indeed Scraper API.
     """
-    if 'job_aggregator' not in st.session_state:
-        # Primary source: Indeed (required)
+    if 'job_scraper' not in st.session_state:
         RAPIDAPI_KEY = st.secrets.get("RAPIDAPI_KEY", "")
         if not RAPIDAPI_KEY:
             st.error("⚠️ RAPIDAPI_KEY is required in secrets. Please configure it in your .streamlit/secrets.toml")
             return None
         
-        # Check if we should prefer LinkedIn or skip Indeed when quota exceeded
-        # Handle both boolean and string values from secrets
-        use_linkedin_only_val = st.secrets.get("USE_LINKEDIN_ONLY", "")
-        if isinstance(use_linkedin_only_val, bool):
-            use_linkedin_only = use_linkedin_only_val
-        else:
-            use_linkedin_only = str(use_linkedin_only_val).lower() in ("true", "1", "yes")
-        
-        skip_if_quota_exceeded_val = st.secrets.get("SKIP_INDEED_IF_QUOTA_EXCEEDED", "")
-        if isinstance(skip_if_quota_exceeded_val, bool):
-            skip_if_quota_exceeded = skip_if_quota_exceeded_val
-        else:
-            skip_if_quota_exceeded = str(skip_if_quota_exceeded_val).lower() in ("true", "1", "yes")
-        
-        primary_source = None
-        if not use_linkedin_only:
-            primary_source = IndeedScraperAPI(RAPIDAPI_KEY, skip_if_quota_exceeded=skip_if_quota_exceeded)
-        
-        # Fallback source: LinkedIn (optional)
-        # Use separate key if provided, otherwise use the same RapidAPI key
-        # Most users will use the same RapidAPI key for both APIs
-        fallback_key = st.secrets.get("LINKEDIN_API_KEY") or RAPIDAPI_KEY
-        
-        fallback_source = None
-        try:
-            fallback_source = LinkedInJobsAPI(fallback_key)
-        except Exception as e:
-            # Fallback source is optional - silently fail
-            # The aggregator will work with just the primary source
-            pass
-        
-        # If LinkedIn only is enabled, make LinkedIn the primary source
-        if use_linkedin_only and fallback_source:
-            st.info("ℹ️ Using LinkedIn only (Indeed skipped per configuration)")
-            primary_source = None
-            # Swap: LinkedIn becomes primary, Indeed becomes fallback (but we won't use Indeed)
-            st.session_state.job_aggregator = MultiSourceJobAggregator(fallback_source, None, prefer_linkedin=True)
-        else:
-            st.session_state.job_aggregator = MultiSourceJobAggregator(primary_source, fallback_source, prefer_linkedin=use_linkedin_only)
+        st.session_state.job_scraper = IndeedScraperAPI(RAPIDAPI_KEY, skip_if_quota_exceeded=False)
     
-    return st.session_state.job_aggregator
+    return st.session_state.job_scraper
 
 def get_text_generator():
     """Get cached text generator instance.
@@ -3938,6 +3659,33 @@ def render_sidebar():
                             }
                             st.success("✅ Profile extracted!")
         
+        # Search Criteria Section
+        st.markdown("---")
+        st.markdown("### 2. Set Search Criteria")
+        
+        # Target Domains
+        target_domains = st.multiselect(
+            "Target Domains",
+            options=["FinTech", "ESG & Sustainability", "Data Analytics", "Digital Transformation", 
+                    "Investment Banking", "Consulting", "Technology", "Healthcare", "Education"],
+            default=st.session_state.get('target_domains', []),
+            help="Select industries/domains to search for jobs",
+            key="sidebar_target_domains"
+        )
+        st.session_state.target_domains = target_domains
+        
+        # Salary Expectation
+        salary_expectation = st.slider(
+            "Min. Monthly Salary (HKD)",
+            min_value=0,
+            max_value=150000,
+            value=st.session_state.get('salary_expectation', 0),
+            step=5000,
+            help="Set to 0 to disable salary filtering",
+            key="sidebar_salary"
+        )
+        st.session_state.salary_expectation = salary_expectation
+        
         # Primary Action Button
         st.markdown("---")
         analyze_button = st.button(
@@ -3952,186 +3700,104 @@ def render_sidebar():
             if not st.session_state.resume_text and not st.session_state.user_profile.get('summary'):
                 st.error("⚠️ Please upload your CV first!")
             else:
-                # Automatically infer target domains and salary from profile
-                text_gen = get_text_generator()
-                if text_gen is None:
-                    st.error("⚠️ Azure OpenAI is not configured. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
-                    return
-                user_profile = st.session_state.user_profile
-                profile_text = f"{user_profile.get('summary', '')} {user_profile.get('experience', '')} {user_profile.get('skills', '')}"
+                # Use user-specified filters from sidebar
+                target_domains = st.session_state.get('target_domains', [])
+                salary_expectation = st.session_state.get('salary_expectation', 0)
                 
-                with st.spinner("🤖 Analyzing your profile to infer preferences..."):
-                    # Infer target domains
-                    domain_prompt = f"""Based on this professional profile, identify the most relevant target domains/industries for job search in Hong Kong.
-
-Profile:
-{profile_text[:2000]}
-
-Return a JSON object with:
-{{
-    "domains": ["Domain1", "Domain2", "Domain3"],
-    "reasoning": "brief explanation"
-}}
-
-Choose from: FinTech, ESG & Sustainability, Data Analytics, Digital Transformation, Investment Banking, Consulting, Technology, Healthcare, Education
-
-Return ONLY valid JSON."""
+                # Build search query from user-specified domains
+                search_query = " ".join(target_domains) if target_domains else "Hong Kong jobs"
+                scraper = get_job_scraper()
+                
+                if scraper is None:
+                    st.error("⚠️ Job scraper not configured. Please check your RAPIDAPI_KEY in Streamlit secrets.")
+                    return
+                
+                with st.spinner("🔄 Fetching jobs from Indeed and analyzing..."):
+                    # Fetch jobs with cache
+                    jobs = fetch_jobs_with_cache(
+                        scraper,
+                        search_query,
+                        location="Hong Kong",
+                        max_rows=25,
+                        job_type="fulltime",
+                        country="hk",
+                        force_refresh=False
+                    )
                     
-                    domain_payload = {
-                        "messages": [
-                            {"role": "system", "content": "You are a career advisor. Analyze profiles and suggest relevant job domains. Return only JSON."},
-                            {"role": "user", "content": domain_prompt}
-                        ],
-                        "max_tokens": 200,
-                        "temperature": 0.3,
-                        "response_format": {"type": "json_object"}
-                    }
+                    if not jobs:
+                        st.error("❌ No jobs found from Indeed. Please check your API configuration or try different search criteria.")
+                        return
                     
-                    def make_domain_request():
-                        return requests.post(text_gen.url, headers=text_gen.headers, json=domain_payload, timeout=30)
+                    # Show how many jobs were fetched before filtering
+                    total_fetched = len(jobs)
                     
-                    domain_response = api_call_with_retry(make_domain_request, max_retries=2)
-                    inferred_domains = []
-                    if domain_response and domain_response.status_code == 200:
-                        result = domain_response.json()
-                        content = result['choices'][0]['message']['content']
-                        try:
-                            domain_data = json.loads(content)
-                            inferred_domains = domain_data.get('domains', [])
-                            if text_gen.token_tracker and 'usage' in result:
-                                usage = result['usage']
-                                text_gen.token_tracker.add_completion_tokens(usage.get('prompt_tokens', 0), usage.get('completion_tokens', 0))
-                        except:
-                            pass
+                    # Apply domain filters (only if user specified domains)
+                    if target_domains:
+                        jobs = filter_jobs_by_domains(jobs, target_domains)
                     
-                    # Infer salary expectation
-                    salary_prompt = f"""Based on this professional profile and Hong Kong market rates, estimate a reasonable minimum monthly salary expectation in HKD.
-
-Profile:
-{profile_text[:2000]}
-
-Return a JSON object with:
-{{
-    "min_salary_hkd_monthly": <number>,
-    "reasoning": "brief explanation"
-}}
-
-Return ONLY valid JSON."""
+                    # Apply salary filter (only if user specified a salary > 0)
+                    if salary_expectation > 0:
+                        jobs = filter_jobs_by_salary(jobs, salary_expectation)
                     
-                    salary_payload = {
-                        "messages": [
-                            {"role": "system", "content": "You are a salary advisor for Hong Kong market. Estimate reasonable salary expectations. Return only JSON."},
-                            {"role": "user", "content": salary_prompt}
-                        ],
-                        "max_tokens": 150,
-                        "temperature": 0.2,
-                        "response_format": {"type": "json_object"}
-                    }
+                    if not jobs:
+                        st.warning(f"⚠️ No jobs match your filters. Found {total_fetched} jobs but none passed your criteria. Try reducing salary or selecting different domains.")
+                        return
                     
-                    def make_salary_request():
-                        return requests.post(text_gen.url, headers=text_gen.headers, json=salary_payload, timeout=30)
+                    # Perform semantic matching
+                    embedding_gen = get_embedding_generator()
+                    if embedding_gen is None:
+                        st.error("⚠️ Azure OpenAI is not configured. Please configure AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in your Streamlit secrets.")
+                        return
                     
-                    salary_response = api_call_with_retry(make_salary_request, max_retries=2)
-                    inferred_salary = 45000  # Default
-                    if salary_response and salary_response.status_code == 200:
-                        result = salary_response.json()
-                        content = result['choices'][0]['message']['content']
-                        try:
-                            salary_data = json.loads(content)
-                            inferred_salary = int(salary_data.get('min_salary_hkd_monthly', 45000))
-                            if text_gen.token_tracker and 'usage' in result:
-                                usage = result['usage']
-                                text_gen.token_tracker.add_completion_tokens(usage.get('prompt_tokens', 0), usage.get('completion_tokens', 0))
-                        except:
-                            pass
+                    desired_matches = min(15, len(jobs))
+                    jobs_to_index_limit = _determine_index_limit(len(jobs), desired_matches)
+                    top_match_count = min(desired_matches, jobs_to_index_limit)
+                    search_engine = SemanticJobSearch(embedding_gen)
+                    search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
                     
-                    # Store inferred values
-                    st.session_state.target_domains = inferred_domains
-                    st.session_state.salary_expectation = inferred_salary
-                    
-                    # Build search query from inferred domains
-                    search_query = " ".join(inferred_domains) if inferred_domains else "Hong Kong jobs"
-                    scraper = get_job_scraper()
-                    
-                    with st.spinner("🔄 Fetching jobs and analyzing..."):
-                        # Fetch jobs with cache (force_refresh=False to respect cache gate)
-                        # force_refresh is NEVER set to True here - it should only be True
-                        # when user explicitly clicks a "Refresh Jobs" button
-                        jobs = fetch_jobs_with_cache(
-                            scraper,
-                            search_query,
-                            location="Hong Kong",
-                            max_rows=25,
-                            job_type="fulltime",
-                            country="hk",
-                            force_refresh=False  # Explicitly False - never bypass cache from Analyze button
+                    # Use pre-computed resume embedding if available
+                    resume_embedding = st.session_state.get('resume_embedding')
+                    if not resume_embedding and st.session_state.resume_text:
+                        resume_embedding = generate_and_store_resume_embedding(
+                            st.session_state.resume_text,
+                            st.session_state.user_profile if st.session_state.user_profile else None
                         )
-                        
-                        if jobs:
-                            # Apply domain filters
-                            if inferred_domains:
-                                jobs = filter_jobs_by_domains(jobs, inferred_domains)
-                            
-                            # Apply salary filter
-                            if inferred_salary > 0:
-                                jobs = filter_jobs_by_salary(jobs, inferred_salary)
-                        
-                        if not jobs:
-                            st.warning("⚠️ No jobs match your filters. Try adjusting your criteria.")
-                            return
-                        
-                        # Perform semantic matching
-                        embedding_gen = get_embedding_generator()
-                        desired_matches = min(15, len(jobs))
-                        jobs_to_index_limit = _determine_index_limit(len(jobs), desired_matches)
-                        top_match_count = min(desired_matches, jobs_to_index_limit)
-                        search_engine = SemanticJobSearch(embedding_gen)
-                        search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
-                        
-                        # Use pre-computed resume embedding if available (simplified - no query string needed)
-                        resume_embedding = st.session_state.get('resume_embedding')
-                        if not resume_embedding and st.session_state.resume_text:
-                            # Generate embedding if it doesn't exist yet
-                            resume_embedding = generate_and_store_resume_embedding(
-                                st.session_state.resume_text,
-                                st.session_state.user_profile if st.session_state.user_profile else None
-                            )
-                        
-                        # Fallback: build query string if no resume embedding available
-                        resume_query = None
-                        if not resume_embedding:
-                            if st.session_state.resume_text:
-                                resume_query = st.session_state.resume_text
-                                if st.session_state.user_profile.get('summary'):
-                                    profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
-                                    resume_query = f"{resume_query} {profile_data}"
-                            else:
-                                resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
-                        
-                        results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
-                        
-                        if results:
-                            # Calculate skill matches
-                            user_skills = st.session_state.user_profile.get('skills', '')
-                            for result in results:
-                                job_skills = result['job'].get('skills', [])
-                                skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
-                                result['skill_match_score'] = skill_score
-                                result['missing_skills'] = missing_skills
-                                
-                                # Calculate combined match score (weighted: 60% semantic, 40% skill)
-                                semantic_score = result.get('similarity_score', 0.0)
-                                combined_score = (semantic_score * 0.6) + (skill_score * 0.4)
-                                result['combined_match_score'] = combined_score
-                            
-                            # Sort results by combined match score (highest to lowest)
-                            results.sort(key=lambda x: x.get('combined_match_score', 0.0), reverse=True)
-                            
-                            st.session_state.matched_jobs = results
-                            st.session_state.dashboard_ready = True
-                            st.rerun()
+                    
+                    # Fallback: build query string if no resume embedding available
+                    resume_query = None
+                    if not resume_embedding:
+                        if st.session_state.resume_text:
+                            resume_query = st.session_state.resume_text
+                            if st.session_state.user_profile.get('summary'):
+                                profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
+                                resume_query = f"{resume_query} {profile_data}"
                         else:
-                            st.error("❌ No jobs found. Please try different filters.")
+                            resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
+                    
+                    results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
+                    
+                    if results:
+                        # Calculate skill matches
+                        user_skills = st.session_state.user_profile.get('skills', '')
+                        for result in results:
+                            job_skills = result['job'].get('skills', [])
+                            skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
+                            result['skill_match_score'] = skill_score
+                            result['missing_skills'] = missing_skills
+                            
+                            # Calculate combined match score (weighted: 60% semantic, 40% skill)
+                            semantic_score = result.get('similarity_score', 0.0)
+                            combined_score = (semantic_score * 0.6) + (skill_score * 0.4)
+                            result['combined_match_score'] = combined_score
+                        
+                        # Sort results by combined match score (highest to lowest)
+                        results.sort(key=lambda x: x.get('combined_match_score', 0.0), reverse=True)
+                        
+                        st.session_state.matched_jobs = results
+                        st.session_state.dashboard_ready = True
+                        st.rerun()
+                    else:
+                        st.error("❌ No matching jobs found. Please try different filters.")
         
         # Skill Matching Calculation Matrix
         display_skill_matching_matrix(st.session_state.user_profile)
@@ -4380,13 +4046,14 @@ def display_refine_results_section(matched_jobs, user_profile):
         
         with col2:
             # Salary Expectations
-            current_salary = st.session_state.get('salary_expectation', 45000)
+            current_salary = st.session_state.get('salary_expectation', 0)
             salary_expectation = st.slider(
-                "Min. Monthly Salary Expectation (HKD)",
-                min_value=20000,
+                "Min. Monthly Salary (HKD)",
+                min_value=0,
                 max_value=150000,
                 value=current_salary,
                 step=5000,
+                help="Set to 0 to disable salary filtering",
                 key="refine_salary"
             )
         
@@ -4406,7 +4073,11 @@ def display_refine_results_section(matched_jobs, user_profile):
             search_query = " ".join(target_domains) if target_domains else "Hong Kong jobs"
             scraper = get_job_scraper()
             
-            with st.spinner("🔄 Refreshing results with new filters..."):
+            if scraper is None:
+                st.error("⚠️ Job scraper not configured. Please check your RAPIDAPI_KEY in Streamlit secrets.")
+                return
+            
+            with st.spinner("🔄 Refreshing results from Indeed..."):
                 # Fetch jobs with cache
                 # force_refresh is only True if user explicitly checked the checkbox
                 # This is the ONLY place where force_refresh can be True (user-initiated)
@@ -4420,70 +4091,74 @@ def display_refine_results_section(matched_jobs, user_profile):
                     force_refresh=force_refresh  # Only True if user explicitly checked the box
                 )
                 
-                if jobs:
-                    # Apply domain filters
-                    if target_domains:
-                        jobs = filter_jobs_by_domains(jobs, target_domains)
+                if not jobs:
+                    st.error("❌ No jobs found from Indeed. Please check your API configuration or try different search criteria.")
+                    return
+                
+                # Show how many jobs were fetched before filtering
+                total_fetched = len(jobs)
+                
+                # Apply domain filters
+                if target_domains:
+                    jobs = filter_jobs_by_domains(jobs, target_domains)
+                
+                # Apply salary filter
+                if salary_expectation > 0:
+                    jobs = filter_jobs_by_salary(jobs, salary_expectation)
+                
+                if not jobs:
+                    st.warning(f"⚠️ No jobs match your filters. Found {total_fetched} jobs but none passed your criteria. Try reducing salary or selecting different domains.")
+                    return
+                
+                # Re-index and search
+                embedding_gen = get_embedding_generator()
+                desired_matches = min(15, len(jobs))
+                jobs_to_index_limit = _determine_index_limit(len(jobs), desired_matches)
+                top_match_count = min(desired_matches, jobs_to_index_limit)
+                search_engine = SemanticJobSearch(embedding_gen)
+                search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
+                
+                # Use pre-computed resume embedding if available
+                resume_embedding = st.session_state.get('resume_embedding')
+                if not resume_embedding and st.session_state.resume_text:
+                    resume_embedding = generate_and_store_resume_embedding(
+                        st.session_state.resume_text,
+                        st.session_state.user_profile if st.session_state.user_profile else None
+                    )
+                
+                # Fallback: build query string if no resume embedding available
+                resume_query = None
+                if not resume_embedding:
+                    if st.session_state.resume_text:
+                        resume_query = st.session_state.resume_text
+                        if st.session_state.user_profile.get('summary'):
+                            profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
+                            resume_query = f"{resume_query} {profile_data}"
+                    else:
+                        resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
+                
+                results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
+                
+                # Calculate skill matches
+                user_skills = st.session_state.user_profile.get('skills', '')
+                for result in results:
+                    job_skills = result['job'].get('skills', [])
+                    skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
+                    result['skill_match_score'] = skill_score
+                    result['missing_skills'] = missing_skills
                     
-                    # Apply salary filter
-                    if salary_expectation > 0:
-                        jobs = filter_jobs_by_salary(jobs, salary_expectation)
-                    
-                    if not jobs:
-                        st.warning("⚠️ No jobs match your filters. Try adjusting your criteria.")
-                        return
-                    
-                    # Re-index and search
-                    embedding_gen = get_embedding_generator()
-                    desired_matches = min(15, len(jobs))
-                    jobs_to_index_limit = _determine_index_limit(len(jobs), desired_matches)
-                    top_match_count = min(desired_matches, jobs_to_index_limit)
-                    search_engine = SemanticJobSearch(embedding_gen)
-                    search_engine.index_jobs(jobs, max_jobs_to_index=jobs_to_index_limit)
-                    
-                    # Use pre-computed resume embedding if available (simplified - no query string needed)
-                    resume_embedding = st.session_state.get('resume_embedding')
-                    if not resume_embedding and st.session_state.resume_text:
-                        # Generate embedding if it doesn't exist yet
-                        resume_embedding = generate_and_store_resume_embedding(
-                            st.session_state.resume_text,
-                            st.session_state.user_profile if st.session_state.user_profile else None
-                        )
-                    
-                    # Fallback: build query string if no resume embedding available
-                    resume_query = None
-                    if not resume_embedding:
-                        if st.session_state.resume_text:
-                            resume_query = st.session_state.resume_text
-                            if st.session_state.user_profile.get('summary'):
-                                profile_data = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')}"
-                                resume_query = f"{resume_query} {profile_data}"
-                        else:
-                            resume_query = f"{st.session_state.user_profile.get('summary', '')} {st.session_state.user_profile.get('experience', '')} {st.session_state.user_profile.get('skills', '')} {st.session_state.user_profile.get('education', '')}"
-                    
-                    results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
-                    
-                    # Calculate skill matches
-                    user_skills = st.session_state.user_profile.get('skills', '')
-                    for result in results:
-                        job_skills = result['job'].get('skills', [])
-                        skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
-                        result['skill_match_score'] = skill_score
-                        result['missing_skills'] = missing_skills
-                        
-                        # Calculate combined match score (weighted: 60% semantic, 40% skill)
-                        semantic_score = result.get('similarity_score', 0.0)
-                        combined_score = (semantic_score * 0.6) + (skill_score * 0.4)
-                        result['combined_match_score'] = combined_score
-                    
-                    # Sort results by combined match score (highest to lowest)
-                    results.sort(key=lambda x: x.get('combined_match_score', 0.0), reverse=True)
-                    
-                    st.session_state.matched_jobs = results
-                    st.session_state.dashboard_ready = True
-                    st.rerun()
-                else:
-                    st.error("❌ No jobs found. Please try different filters.")
+                    # Calculate combined match score (weighted: 60% semantic, 40% skill)
+                    semantic_score = result.get('similarity_score', 0.0)
+                    combined_score = (semantic_score * 0.6) + (skill_score * 0.4)
+                    result['combined_match_score'] = combined_score
+                
+                # Sort results by combined match score (highest to lowest)
+                results.sort(key=lambda x: x.get('combined_match_score', 0.0), reverse=True)
+                
+                st.session_state.matched_jobs = results
+                st.session_state.dashboard_ready = True
+                st.rerun()
+
 
 def display_ranked_matches_table(matched_jobs, user_profile):
     """Display Smart Ranked Matches Table with interactive dataframe
