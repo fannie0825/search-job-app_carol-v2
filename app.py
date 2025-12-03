@@ -261,76 +261,274 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.markdown("""
+# Initialize theme in session state
+if 'theme_mode' not in st.session_state:
+    st.session_state.theme_mode = "Light"
+
+# Get theme mode from session state
+theme_mode = st.session_state.theme_mode
+
+# Dynamic CSS based on theme
+if theme_mode == "Dark":
+    # Dark mode colors
+    bg_color = "#161616"
+    secondary_bg = "#262626"
+    text_color = "#F4F4F4"
+    primary_color = "#4589FF"
+    card_bg = "#262626"
+    border_color = "#3D3D3D"
+    hover_bg = "#333333"
+else:
+    # Light mode colors
+    bg_color = "#FFFFFF"
+    secondary_bg = "#F4F7FC"
+    text_color = "#161616"
+    primary_color = "#0F62FE"
+    card_bg = "#FFFFFF"
+    border_color = "#E0E0E0"
+    hover_bg = "#F0F0F0"
+
+st.markdown(f"""
 <style>
-    /* CareerLens Design System - CSS Variables */
-    /* Crisp, corporate blue identity */
-    :root {
-        /* Light Mode Colors - Corporate Blue Theme */
-        --primary-accent: #0F62FE;        /* Strong corporate blue for buttons/accents */
-        --action-accent: #0F62FE;         /* Strong corporate blue for match scores, action items */
-        --bg-main: #FFFFFF;               /* Clean white background */
-        --bg-container: #F4F7FC;          /* Very pale blue-grey for sidebar and metric containers */
-        --text-primary: #161616;          /* High contrast dark grey text */
-        --text-secondary: #374151;         /* Body text (Dark Gray) */
-        --text-muted: #6B7280;            /* Muted text (Medium Gray) */
-        --success-green: #10B981;         /* Success states (Green) */
-        --warning-amber: #F59E0B;         /* Warning states (Amber) */
-        --error-red: #EF4444;             /* Error states (Red) */
-        --navy-deep: #1A2B45;             /* Deep Navy - Sidebar background */
-        --navy-light: #2C3E50;            /* Lighter Navy - Hover states */
-    }
+    /* Global Styling */
+    .stApp {{
+        background-color: {bg_color};
+        color: {text_color};
+    }}
     
-    /* Dark Mode Colors - Dark Mode Alternative */
-    [data-theme="dark"] {
-        --primary-accent: #4589FF;        /* Brighter blue for contrast against dark backgrounds */
-        --action-accent: #4589FF;         /* Brighter blue for hover states in dark mode */
-        --bg-main: #161616;               /* Deep dark grey background */
-        --bg-container: #262626;          /* Medium dark grey for sidebar/containers */
-        --text-primary: #F4F4F4;          /* Off-white text */
-        --text-secondary: #D1D5DB;        /* Secondary text (Light Gray) */
-        --text-muted: #9CA3AF;            /* Muted text in dark mode */
-        --success-green: #10B981;         /* Success states (Green) */
-        --warning-amber: #F59E0B;         /* Warning states (Amber) */
-        --error-red: #EF4444;             /* Error states (Red) */
-        --navy-deep: #0F172A;             /* Darker Navy - Dark mode sidebar */
-        --navy-light: #1A2B45;            /* Deep Navy - Hover states in dark mode */
-    }
+    /* Sidebar Styling */
+    [data-testid="stSidebar"] {{
+        background-color: {secondary_bg};
+        padding: 2rem 1rem;
+    }}
     
-    /* Override Streamlit dark mode - multiple selectors for compatibility */
-    .stApp[data-theme="dark"],
-    [data-theme="dark"] .stApp,
-    .stApp[data-theme="dark"] :root {
-        --primary-accent: #4589FF;
-        --action-accent: #4589FF;
-        --bg-main: #161616;
-        --bg-container: #262626;
-        --text-primary: #F4F4F4;
-        --text-secondary: #D1D5DB;
-        --text-muted: #9CA3AF;
+    /* Card Styling */
+    .metric-card {{
+        background-color: {card_bg};
+        border: 1px solid {border_color};
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        margin-bottom: 16px;
+    }}
+    
+    /* Button Styling */
+    .stButton > button {{
+        background-color: {primary_color};
+        color: white;
+        border-radius: 8px;
+        border: none;
+        padding: 0.5rem 2rem;
+        font-weight: 500;
+        transition: all 0.3s ease;
+    }}
+    
+    .stButton > button:hover {{
+        background-color: {primary_color};
+        opacity: 0.8;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(15, 98, 254, 0.3);
+    }}
+    
+    /* Secondary Button */
+    .secondary-button {{
+        background-color: transparent;
+        color: {primary_color};
+        border: 1px solid {primary_color};
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+        font-weight: 500;
+        transition: all 0.3s ease;
+    }}
+    
+    .secondary-button:hover {{
+        background-color: {primary_color};
+        color: white;
+    }}
+    
+    /* Table Styling */
+    .dataframe {{
+        background-color: {card_bg};
+        border: 1px solid {border_color};
+        border-radius: 12px;
+        overflow: hidden;
+    }}
+    
+    .dataframe th {{
+        background-color: {secondary_bg};
+        color: {text_color};
+        font-weight: 600;
+        padding: 12px;
+        border-bottom: 2px solid {border_color};
+    }}
+    
+    .dataframe td {{
+        padding: 12px;
+        border-bottom: 1px solid {border_color};
+    }}
+    
+    .dataframe tr:hover {{
+        background-color: {hover_bg};
+    }}
+    
+    /* Progress Bar */
+    .progress-bar {{
+        background-color: {border_color};
+        border-radius: 10px;
+        height: 8px;
+        overflow: hidden;
+    }}
+    
+    .progress-fill {{
+        background-color: {primary_color};
+        height: 100%;
+        border-radius: 10px;
+        transition: width 0.3s ease;
+    }}
+    
+    /* Upload Section */
+    [data-testid="stFileUploader"] {{
+        background-color: {card_bg};
+        border: 2px dashed {border_color};
+        border-radius: 12px;
+        padding: 2rem;
+    }}
+    
+    /* Slider Styling */
+    .stSlider {{
+        padding: 1rem 0;
+    }}
+    
+    /* Header Styling */
+    h1, h2, h3 {{
+        color: {text_color};
+    }}
+    
+    h1 {{
+        font-size: 36px;
+        font-weight: 700;
+        margin-bottom: 2rem;
+    }}
+    
+    h2 {{
+        font-size: 28px;
+        font-weight: 600;
+        margin-bottom: 1.5rem;
+    }}
+    
+    /* Metric Container */
+    .metric-container {{
+        display: flex;
+        gap: 20px;
+        margin-bottom: 2rem;
+    }}
+    
+    .metric-label {{
+        font-size: 14px;
+        color: #6B7280;
+        margin-bottom: 8px;
+        font-weight: 500;
+    }}
+    
+    .metric-value {{
+        font-size: 28px;
+        font-weight: 700;
+        color: {text_color};
+    }}
+    
+    /* Expandable Section */
+    .expander-content {{
+        background-color: {secondary_bg};
+        border-left: 4px solid {primary_color};
+        padding: 16px;
+        margin: 8px 0;
+        border-radius: 4px;
+    }}
+    
+    /* Input Fields */
+    .stTextInput > div > div > input,
+    .stSelectbox > div > div > select {{
+        background-color: {card_bg};
+        color: {text_color};
+        border: 1px solid {border_color};
+        border-radius: 8px;
+    }}
+    
+    /* Multi-select */
+    .stMultiSelect {{
+        background-color: {card_bg};
+        border-radius: 8px;
+    }}
+    
+    /* Badge/Tag Styling */
+    .fit-type-badge {{
+        background-color: {secondary_bg};
+        color: {text_color};
+        padding: 4px 12px;
+        border-radius: 16px;
+        font-size: 12px;
+        font-weight: 500;
+        display: inline-block;
+    }}
+    
+    /* Logo Section */
+    .logo-container {{
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 2rem;
+    }}
+    
+    .logo-text {{
+        font-size: 24px;
+        font-weight: 700;
+        color: {text_color};
+    }}
+    
+    /* Divider */
+    hr {{
+        border: none;
+        border-top: 1px solid {border_color};
+        margin: 2rem 0;
+    }}
+    
+    /* CareerLens Design System - CSS Variables for compatibility */
+    :root {{
+        --primary-accent: {primary_color};
+        --action-accent: {primary_color};
+        --bg-main: {bg_color};
+        --bg-container: {secondary_bg};
+        --text-primary: {text_color};
+        --text-secondary: {text_color};
+        --text-muted: {text_color};
         --success-green: #10B981;
         --warning-amber: #F59E0B;
         --error-red: #EF4444;
-        --navy-deep: #0F172A;
-        --navy-light: #1A2B45;
-    }
+        --navy-deep: #1e3a5f;
+        --navy-light: #2C3E50;
+    }}
     
-    /* Ensure CSS variables work in all contexts */
+    /* Dark Mode Override */
+    [data-theme="dark"] {{
+        --primary-accent: {primary_color};
+        --action-accent: {primary_color};
+        --bg-main: {bg_color};
+        --bg-container: {secondary_bg};
+        --text-primary: {text_color};
+        --text-secondary: {text_color};
+        --text-muted: {text_color};
+    }}
+    
     html[data-theme="dark"],
-    html[data-theme="dark"] :root {
-        --primary-accent: #4589FF;
-        --action-accent: #4589FF;
-        --bg-main: #161616;
-        --bg-container: #262626;
-        --text-primary: #F4F4F4;
-        --text-secondary: #D1D5DB;
-        --text-muted: #9CA3AF;
-        --success-green: #10B981;
-        --warning-amber: #F59E0B;
-        --error-red: #EF4444;
-        --navy-deep: #0F172A;
-        --navy-light: #1A2B45;
-    }
+    html[data-theme="dark"] :root {{
+        --primary-accent: {primary_color};
+        --action-accent: {primary_color};
+        --bg-main: {bg_color};
+        --bg-container: {secondary_bg};
+        --text-primary: {text_color};
+        --text-secondary: {text_color};
+        --text-muted: {text_color};
+    }}
     
     /* Main Header */
     .main-header {
@@ -3597,6 +3795,27 @@ def display_resume_generator():
 def render_sidebar():
     """Render CareerLens sidebar with resume upload, market filters, and analyze button"""
     with st.sidebar:
+        # Theme Toggle
+        theme_mode = st.radio("Theme", ["Light", "Dark"], horizontal=True, key="theme_radio")
+        if theme_mode != st.session_state.theme_mode:
+            st.session_state.theme_mode = theme_mode
+            st.rerun()
+        
+        # Apply theme via JavaScript
+        theme_script = f"""
+        <script>
+            const theme = "{theme_mode}";
+            if (theme === "Dark") {{
+                document.documentElement.setAttribute('data-theme', 'dark');
+                document.querySelector('.stApp').setAttribute('data-theme', 'dark');
+            }} else {{
+                document.documentElement.removeAttribute('data-theme');
+                document.querySelector('.stApp').removeAttribute('data-theme');
+            }}
+        </script>
+        """
+        st.markdown(theme_script, unsafe_allow_html=True)
+        
         # Header with icon and title
         st.markdown("""
         <div style="margin-bottom: 2rem;">
