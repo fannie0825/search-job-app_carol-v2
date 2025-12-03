@@ -206,11 +206,15 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
                     source_note = ""
                     if delay_source != "fallback":
                         source_note = f" (server hint: {delay_source})"
-                    # Show user-friendly message
-                    st.warning(
-                        f"⏳ Rate limit reached. Retrying in {delay} seconds{source_note}... "
-                        f"(Attempt {attempt + 1}/{max_retries})"
-                    )
+                    # Only show detailed message on first retry, use less intrusive indicator for subsequent retries
+                    if attempt == 0:
+                        st.warning(
+                            f"⏳ Rate limit reached. Retrying in {delay} seconds{source_note}... "
+                            f"(Attempt {attempt + 1}/{max_retries})"
+                        )
+                    else:
+                        # Use caption for subsequent retries (less intrusive)
+                        st.caption(f"⏳ Retrying... ({attempt + 1}/{max_retries})")
                     time.sleep(delay)
                     continue
                 else:
@@ -1032,17 +1036,34 @@ st.markdown("""
         window.addEventListener('load', updateTheme);
     }
     
-    // Re-apply theme periodically to catch dynamically loaded content
-    setInterval(function() {
-        const currentPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        const hasDarkTheme = document.documentElement.hasAttribute('data-theme');
+    // Use MutationObserver instead of setInterval for better performance
+    // This watches for DOM changes and only checks theme when needed
+    if (typeof MutationObserver !== 'undefined') {
+        let lastThemeCheck = 0;
+        const themeCheckThrottle = 2000; // Check at most once every 2 seconds
         
-        if (currentPrefersDark && !hasDarkTheme) {
-            updateTheme();
-        } else if (!currentPrefersDark && hasDarkTheme) {
-            updateTheme();
-        }
-    }, 1000); // Check every second
+        const themeObserver = new MutationObserver(function() {
+            const now = Date.now();
+            if (now - lastThemeCheck < themeCheckThrottle) {
+                return; // Throttle checks
+            }
+            lastThemeCheck = now;
+            
+            const currentPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const hasDarkTheme = document.documentElement.hasAttribute('data-theme');
+            
+            if ((currentPrefersDark && !hasDarkTheme) || (!currentPrefersDark && hasDarkTheme)) {
+                updateTheme();
+            }
+        });
+        
+        // Observe document body for changes (Streamlit dynamically loads content)
+        themeObserver.observe(document.body, { 
+            childList: true, 
+            subtree: true,
+            attributes: false // We don't need to watch attribute changes
+        });
+    }
 })();
 </script>
 """, unsafe_allow_html=True)
@@ -1201,15 +1222,10 @@ class APIMEmbeddingGenerator:
                     total_tokens_used += tokens_used
                 elif response and response.status_code == 429:
                     # Rate limit hit - api_call_with_retry already handled retries with backoff
-                    # Fallback to individual calls (which will also use exponential backoff)
-                    st.warning(f"⚠️ Rate limit reached. Processing batch {batch_num} individually...")
-                    for text in batch:
-                        emb, tokens = self.get_embedding(text)
-                        if emb:
-                            embeddings.append(emb)
-                            total_tokens_used += tokens
-                        else:
-                            st.warning(f"⚠️ Skipping embedding due to rate limit.")
+                    # If still 429 after retries, skip this batch to avoid further rate limit issues
+                    st.warning(f"⚠️ Rate limit reached after retries. Skipping batch {batch_num}/{total_batches}. Consider reducing batch size or waiting before retrying.")
+                    # Don't try individual calls - they'll likely hit the same rate limit
+                    # This prevents cascading rate limit failures
                 else:
                     # Other error - fallback to individual calls
                     st.warning(f"⚠️ Batch embedding failed (status {response.status_code if response else 'None'}), trying individual calls for batch {batch_num}...")
@@ -1737,13 +1753,15 @@ class IndeedScraperAPI:
                 return jobs
             else:
                 if response:
+                    # api_call_with_retry already handled 429 retries, so if we still get 429 here,
+                    # it means all retries were exhausted
                     if response.status_code == 429:
                         error_msg = "🚫 Indeed API quota exceeded (429). Switching to LinkedIn..."
                         if self.skip_if_quota_exceeded:
                             st.warning(error_msg)
                             raise QuotaExceededError("Indeed API quota exceeded")
                         else:
-                            st.error("🚫 Rate limit reached for job search API. Please wait a few minutes and try again.")
+                            st.error("🚫 Rate limit reached for job search API after retries. Please wait a few minutes and try again.")
                     else:
                         error_detail = response.text[:200] if response.text else "No error details"
                         # Check if error indicates quota exceeded
@@ -1883,9 +1901,10 @@ class LinkedInJobsAPI:
                         break
                 else:
                     # If we get an error, stop trying
+                    # api_call_with_retry already handled 429 retries
                     if response:
                         if response.status_code == 429:
-                            st.warning("⚠️ LinkedIn API rate limit reached. Returning partial results.")
+                            st.warning("⚠️ LinkedIn API rate limit reached after retries. Returning partial results.")
                         else:
                             st.warning(f"⚠️ LinkedIn API error: {response.status_code}")
                     break
@@ -2143,7 +2162,7 @@ class SemanticJobSearch:
                 
                 # Retrieve all embeddings (existing + newly generated)
                 retrieved = self.collection.get(ids=job_hashes, include=['embeddings'])
-                if retrieved and 'embeddings' in retrieved and retrieved['embeddings']:
+                if retrieved and 'embeddings' in retrieved and retrieved['embeddings'] is not None and len(retrieved['embeddings']) > 0:
                     # Map hashes to embeddings and maintain job order
                     hash_to_emb = {h: e for h, e in zip(retrieved['ids'], retrieved['embeddings'])}
                     self.job_embeddings = [hash_to_emb.get(h, None) for h in job_hashes]
@@ -2749,27 +2768,35 @@ def filter_jobs_by_domains(jobs, target_domains):
     
     filtered = []
     domain_keywords = {
-        'FinTech': ['fintech', 'financial technology', 'blockchain', 'crypto', 'payment', 'banking technology'],
-        'ESG & Sustainability': ['esg', 'sustainability', 'environmental', 'green', 'carbon', 'climate'],
-        'Data Analytics': ['data analytics', 'data analysis', 'business intelligence', 'bi', 'data science'],
-        'Digital Transformation': ['digital transformation', 'digitalization', 'digital strategy', 'innovation'],
-        'Investment Banking': ['investment banking', 'ib', 'm&a', 'mergers', 'acquisitions', 'capital markets'],
-        'Consulting': ['consulting', 'consultant', 'advisory', 'strategy consulting'],
-        'Technology': ['software', 'technology', 'tech', 'engineering', 'developer', 'programming'],
-        'Healthcare': ['healthcare', 'medical', 'health', 'hospital', 'clinical'],
-        'Education': ['education', 'teaching', 'academic', 'university', 'school']
+        'FinTech': ['fintech', 'financial technology', 'blockchain', 'crypto', 'cryptocurrency', 'payment', 'banking technology', 'digital banking', 'wealthtech', 'insurtech'],
+        'ESG & Sustainability': ['esg', 'sustainability', 'environmental', 'green', 'carbon', 'climate', 'renewable', 'sustainable'],
+        'Data Analytics': ['data analytics', 'data analysis', 'business intelligence', 'bi', 'data science', 'data engineer', 'analytics', 'big data'],
+        'Digital Transformation': ['digital transformation', 'digitalization', 'digital strategy', 'innovation', 'digital', 'transformation'],
+        'Investment Banking': ['investment banking', 'ib', 'm&a', 'mergers', 'acquisitions', 'capital markets', 'equity research', 'corporate finance'],
+        'Consulting': ['consulting', 'consultant', 'advisory', 'strategy consulting', 'management consulting'],
+        'Technology': ['software', 'technology', 'tech', 'engineering', 'developer', 'programming', 'it', 'information technology', 'software engineer'],
+        'Healthcare': ['healthcare', 'medical', 'health', 'hospital', 'clinical', 'pharmaceutical', 'biotech'],
+        'Education': ['education', 'teaching', 'academic', 'university', 'school', 'e-learning', 'edtech'],
+        'Real Estate': ['real estate', 'property', 'realty', 'property management', 'real estate development'],
+        'Retail & E-commerce': ['retail', 'e-commerce', 'ecommerce', 'online retail', 'retail management'],
+        'Marketing & Advertising': ['marketing', 'advertising', 'brand', 'digital marketing', 'social media marketing'],
+        'Legal': ['legal', 'law', 'attorney', 'lawyer', 'compliance', 'regulatory'],
+        'Human Resources': ['human resources', 'hr', 'recruitment', 'talent acquisition', 'people operations'],
+        'Operations': ['operations', 'operations management', 'supply chain', 'logistics', 'procurement']
     }
     
     for job in jobs:
+        # Check full description, not just first 2000 chars, and include company name
         title_lower = job.get('title', '').lower()
-        desc_lower = job.get('description', '').lower()[:2000]  # Check first 2000 chars
-        combined = f"{title_lower} {desc_lower}"
+        desc_lower = job.get('description', '').lower()  # Check full description
+        company_lower = job.get('company', '').lower()
+        combined = f"{title_lower} {desc_lower} {company_lower}"
         
         for domain in target_domains:
             keywords = domain_keywords.get(domain, [domain.lower()])
             if any(keyword.lower() in combined for keyword in keywords):
                 filtered.append(job)
-                break
+                break  # Job matched a domain, no need to check other domains
     
     return filtered if filtered else jobs  # Return all if no matches
 
@@ -2779,23 +2806,41 @@ def filter_jobs_by_salary(jobs, min_salary):
         return jobs
     
     filtered = []
+    jobs_without_salary = []
+    
     for job in jobs:
         salary_str = job.get('salary', '')
         description = job.get('description', '')
         
-        # Try to extract salary
+        # Try to extract salary from salary field first
         min_sal, max_sal = extract_salary_from_text(salary_str)
-        if not min_sal:
-            min_sal, max_sal = extract_salary_from_text(description[:5000])
         
-        # If we found a salary and it meets the minimum, include it
-        # If no salary found, include it (can't filter what we don't know)
-        if min_sal and min_sal >= min_salary:
-            filtered.append(job)
-        elif not min_sal:
-            filtered.append(job)  # Include jobs without salary info
+        # If not found, try full description (not just first 5000 chars)
+        if not min_sal:
+            min_sal, max_sal = extract_salary_from_text(description)  # Check full description
+        
+        # If we found a salary
+        if min_sal:
+            # Include if minimum salary meets requirement OR if salary range overlaps with requirement
+            # (e.g., if job is 50k-70k and user wants 60k, include it because 70k >= 60k)
+            if min_sal >= min_salary or (max_sal and max_sal >= min_salary):
+                filtered.append(job)
+            # else: job salary is too low, exclude it
+        else:
+            # No salary info found - store separately to add at end if no matches
+            jobs_without_salary.append(job)
     
-    return filtered
+    # If we have matches, return only matches
+    # If no matches but we have jobs without salary, include those (user can decide)
+    if filtered:
+        return filtered
+    elif jobs_without_salary:
+        # No jobs met salary requirement, but return jobs without salary info
+        # so user knows there are jobs available (they just don't have salary listed)
+        return jobs_without_salary
+    else:
+        # No jobs at all
+        return []
 
 def display_job_card(result, index):
     job = result['job']
@@ -3067,8 +3112,9 @@ Important:
         response_pass1 = api_call_with_retry(make_request_pass1, max_retries=3)
         
         if not response_pass1 or response_pass1.status_code != 200:
+            # api_call_with_retry already handled 429 retries
             if response_pass1 and response_pass1.status_code == 429:
-                st.error("🚫 Rate limit reached for profile extraction. Please wait a few minutes and try again.")
+                st.error("🚫 Rate limit reached for profile extraction after retries. Please wait a few minutes and try again.")
             else:
                 error_detail = response_pass1.text[:200] if response_pass1 and response_pass1.text else "No error details"
                 endpoint_info = f"Endpoint: {text_gen.url.split('/deployments')[0]}" if text_gen else "Endpoint: Not configured"
