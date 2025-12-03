@@ -975,6 +975,75 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Auto-detect and apply theme based on system preferences
+# This script runs immediately on page load to detect browser/system theme preference
+st.markdown("""
+<script>
+(function() {
+    // Function to update theme based on system preference
+    function updateTheme() {
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        
+        if (prefersDark) {
+            // Apply dark theme
+            document.documentElement.setAttribute('data-theme', 'dark');
+            // Also apply to Streamlit app container if it exists
+            const stApp = document.querySelector('.stApp') || document.querySelector('[data-testid="stApp"]');
+            if (stApp) {
+                stApp.setAttribute('data-theme', 'dark');
+            }
+            // Apply to body as well for comprehensive coverage
+            document.body.setAttribute('data-theme', 'dark');
+        } else {
+            // Apply light theme (remove dark attribute)
+            document.documentElement.removeAttribute('data-theme');
+            const stApp = document.querySelector('.stApp') || document.querySelector('[data-testid="stApp"]');
+            if (stApp) {
+                stApp.removeAttribute('data-theme');
+            }
+            document.body.removeAttribute('data-theme');
+        }
+    }
+    
+    // Set initial theme immediately (before DOM is fully loaded to prevent flash)
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', updateTheme);
+    } else {
+        updateTheme();
+    }
+    
+    // Listen for changes in system theme preference
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    
+    // Modern browsers support addEventListener
+    if (mediaQuery.addEventListener) {
+        mediaQuery.addEventListener('change', updateTheme);
+    } else {
+        // Fallback for older browsers (Safari < 14, etc.)
+        mediaQuery.addListener(updateTheme);
+    }
+    
+    // Also update theme when Streamlit app is ready (for dynamic content)
+    if (window.parent !== window) {
+        // Running in iframe (Streamlit Cloud)
+        window.addEventListener('load', updateTheme);
+    }
+    
+    // Re-apply theme periodically to catch dynamically loaded content
+    setInterval(function() {
+        const currentPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const hasDarkTheme = document.documentElement.hasAttribute('data-theme');
+        
+        if (currentPrefersDark && !hasDarkTheme) {
+            updateTheme();
+        } else if (!currentPrefersDark && hasDarkTheme) {
+            updateTheme();
+        }
+    }, 1000); // Check every second
+})();
+</script>
+""", unsafe_allow_html=True)
+
 if 'search_history' not in st.session_state:
     st.session_state.search_history = []
 if 'jobs_cache' not in st.session_state:
@@ -3769,42 +3838,8 @@ def display_resume_generator():
 def render_sidebar():
     """Render CareerLens sidebar with resume upload, market filters, and analyze button"""
     with st.sidebar:
-        # Auto-detect and apply theme based on system preferences
-        theme_script = """
-        <script>
-            // Function to update theme based on system preference
-            function updateTheme() {
-                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-                
-                if (prefersDark) {
-                    document.documentElement.setAttribute('data-theme', 'dark');
-                    if (document.querySelector('.stApp')) {
-                        document.querySelector('.stApp').setAttribute('data-theme', 'dark');
-                    }
-                } else {
-                    document.documentElement.removeAttribute('data-theme');
-                    if (document.querySelector('.stApp')) {
-                        document.querySelector('.stApp').removeAttribute('data-theme');
-                    }
-                }
-            }
-            
-            // Set initial theme
-            updateTheme();
-            
-            // Listen for changes in system theme preference
-            const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-            
-            // Modern browsers support addEventListener
-            if (mediaQuery.addEventListener) {
-                mediaQuery.addEventListener('change', updateTheme);
-            } else {
-                // Fallback for older browsers
-                mediaQuery.addListener(updateTheme);
-            }
-        </script>
-        """
-        st.markdown(theme_script, unsafe_allow_html=True)
+        # Theme detection is handled globally at app initialization (see app.py line ~977)
+        # No need to duplicate the theme script here
         
         # Header with icon and title
         st.markdown("""

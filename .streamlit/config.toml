@@ -22,9 +22,9 @@ font = "sans serif"                 # Streamlit default (Inter/Roboto loaded via
 # Enable file watcher for development
 fileWatcherType = "auto"
 # Enable CORS (important for Streamlit Cloud)
-enableCORS = false
+enableCORS = true
 # Enable XSRF protection
-enableXsrfProtection = false
+enableXsrfProtection = true
 # Port configuration (Streamlit Cloud handles this automatically)
 port = 8501
 # Address binding
@@ -42,8 +42,8 @@ runOnSave = false
 [browser]
 # Gather usage stats (optional - set to false to disable)
 gatherUsageStats = false
-# Server address (Streamlit Cloud handles this)
-serverAddress = "localhost"
+# Server address (Streamlit Cloud handles this automatically - do not set for cloud deployment)
+# serverAddress = "localhost"  # Only for local development - commented out for Streamlit Cloud
 
 # UI Configuration
 [ui]
