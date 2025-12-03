@@ -24,6 +24,17 @@ import chromadb
 from chromadb.config import Settings
 import tiktoken
 import hashlib
+import base64
+
+
+# -----------------------------------------------------------------------------
+# HELPER FUNCTION: LOAD IMAGE AS BASE64 FOR HERO BANNER
+# -----------------------------------------------------------------------------
+def get_img_as_base64(file):
+    """Convert an image file to base64 string for embedding in HTML"""
+    with open(file, "rb") as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
 
 
 def _coerce_positive_int(value, default, minimum=1):
@@ -292,11 +303,26 @@ def api_call_with_retry(func, max_retries=3, initial_delay=1, max_delay=60):
     return None
 
 st.set_page_config(
-    page_title="CareerLens - Executive Dashboard",
+    page_title="CareerLens",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# -----------------------------------------------------------------------------
+# LOGO LOADING FOR HERO BANNER
+# -----------------------------------------------------------------------------
+# Try to load the logo. If it doesn't exist, we'll just use a placeholder.
+# This ensures the app doesn't crash if the file is missing.
+_logo_html = ""
+if os.path.exists("CareerLens_Logo.png"):
+    try:
+        _img = get_img_as_base64("CareerLens_Logo.png")
+        _logo_html = f'<img src="data:image/png;base64,{_img}" class="hero-bg-logo">'
+    except Exception as e:
+        _logo_html = '<div class="hero-bg-logo"></div>'
+else:
+    _logo_html = '<div class="hero-bg-logo"></div>'
 
 # Theme will be automatically detected from system preferences via JavaScript
 # CSS uses attribute selectors to respond to data-theme attribute
@@ -304,11 +330,17 @@ st.set_page_config(
 st.markdown("""
 <style>
     /* CareerLens Design System - CSS Variables */
-    /* Light mode (default) */
+    /* New Design Color Scheme */
     :root {{
+        /* New design primary colors */
+        --navy: #0f172a;
+        --cyan: #00d2ff;
+        --bg-gray: #f3f4f6;
+        
+        /* Existing design system colors */
         --primary-accent: #0F62FE;
         --action-accent: #0F62FE;
-        --bg-main: #FFFFFF;
+        --bg-main: #f3f4f6;
         --bg-container: #F4F7FC;
         --card-bg: #FFFFFF;
         --text-primary: #161616;
@@ -337,18 +369,116 @@ st.markdown("""
         --text-muted: #F4F4F4;
         --border-color: #3D3D3D;
         --hover-bg: #333333;
+        --navy: #1e293b;
+        --cyan: #22d3ee;
+        --bg-gray: #1f2937;
     }}
+    
+    /* --- HIDE DEFAULT STREAMLIT ELEMENTS --- */
+    #MainMenu {{visibility: hidden;}}
+    footer {{visibility: hidden;}}
     
     /* Global Styling */
     .stApp {{
-        background-color: var(--bg-main);
+        background-color: var(--bg-gray);
         color: var(--text-primary);
     }}
     
-    /* Sidebar Styling */
+    /* --- SIDEBAR STYLING (Navy Theme) --- */
     [data-testid="stSidebar"] {{
-        background-color: var(--bg-container);
+        background-color: var(--navy);
         padding: 2rem 1rem;
+    }}
+    [data-testid="stSidebar"] * {{
+        color: #94a3b8 !important;
+    }}
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3,
+    [data-testid="stSidebar"] .stMarkdown h2,
+    [data-testid="stSidebar"] .stMarkdown h3 {{
+        color: white !important;
+    }}
+    [data-testid="stSidebar"] .stRadio label:hover,
+    [data-testid="stSidebar"] .stSelectbox label:hover {{
+        color: white !important;
+    }}
+    [data-testid="stSidebar"] .stButton > button {{
+        background-color: var(--cyan) !important;
+        color: var(--navy) !important;
+        font-weight: 600 !important;
+    }}
+    [data-testid="stSidebar"] .stButton > button:hover {{
+        background-color: #06b6d4 !important;
+    }}
+    
+    /* --- HERO BANNER --- */
+    .hero-container {{
+        background: linear-gradient(135deg, var(--navy) 0%, #112545 100%);
+        padding: 40px;
+        border-radius: 12px;
+        color: white;
+        position: relative;
+        overflow: hidden;
+        margin-bottom: 30px;
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+    }}
+    .hero-content {{
+        position: relative;
+        z-index: 2;
+    }}
+    .hero-title {{
+        font-size: 32px;
+        font-weight: 700;
+        margin: 0;
+        color: white;
+    }}
+    .hero-subtitle {{
+        color: #94a3b8;
+        font-size: 16px;
+        margin-top: 10px;
+    }}
+    .hero-bg-logo {{
+        position: absolute;
+        right: -30px;
+        top: -30px;
+        width: 250px;
+        opacity: 0.15;
+        transform: rotate(-15deg);
+        pointer-events: none;
+        z-index: 1;
+    }}
+    
+    /* --- DASHBOARD METRIC CARDS --- */
+    .dashboard-metric-card {{
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        text-align: center;
+    }}
+    .dashboard-metric-label {{
+        font-size: 12px;
+        color: #6b7280;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }}
+    .dashboard-metric-value {{
+        font-size: 28px;
+        font-weight: 700;
+        color: #111827;
+        margin-top: 5px;
+    }}
+    
+    /* Dark mode hero adjustments */
+    [data-theme="dark"] .hero-container {{
+        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    }}
+    [data-theme="dark"] .dashboard-metric-card {{
+        background: var(--card-bg);
+    }}
+    [data-theme="dark"] .dashboard-metric-value {{
+        color: var(--text-primary);
     }}
     
     /* Card Styling */
@@ -3693,13 +3823,13 @@ def render_sidebar():
         # Theme detection is handled globally at app initialization (see app.py line ~977)
         # No need to duplicate the theme script here
         
-        # Header with icon and title
+        # Header with icon and title (Navy theme - white text on dark sidebar)
         st.markdown("""
         <div style="margin-bottom: 2rem;">
-            <h2 style="color: #0F62FE; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+            <h2 style="color: white !important; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
                 🔍 CareerLens
             </h2>
-            <p style="color: #666; font-size: 0.9rem; margin: 0;">AI Career Copilot for Hong Kong</p>
+            <p style="color: #94a3b8 !important; font-size: 0.9rem; margin: 0;">AI Career Copilot for Hong Kong</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -4822,6 +4952,36 @@ def validate_secrets():
         st.error(f"⚠️ Error validating secrets: {e}")
         return False
 
+def render_hero_banner(user_profile, matched_jobs=None):
+    """Render the hero banner with personalized welcome message"""
+    # Get user name or use default
+    user_name = user_profile.get('name', '') if user_profile else ''
+    if not user_name or user_name == 'N/A':
+        user_name = 'Professional'
+    
+    # Generate subtitle based on analysis state
+    if matched_jobs and len(matched_jobs) > 0:
+        # Calculate average match score
+        avg_score = sum(r.get('combined_match_score', 0) for r in matched_jobs) / len(matched_jobs)
+        subtitle = f"We found {len(matched_jobs)} matching opportunities with an average match score of {int(avg_score * 100)}%."
+    elif user_profile and user_profile.get('skills'):
+        subtitle = "Your profile is ready. Click 'Analyze Profile & Find Matches' to discover your market positioning."
+    else:
+        subtitle = "Upload your CV in the sidebar to get started with AI-powered career insights."
+    
+    # Render hero banner with logo
+    st.markdown(f"""
+    <div class="hero-container">
+        {_logo_html}
+        <div class="hero-content">
+            <div style="color: var(--cyan); font-weight: 600; margin-bottom: 5px;">CAREERLENS INTELLIGENCE</div>
+            <div class="hero-title">Welcome back, {user_name}.</div>
+            <div class="hero-subtitle">{subtitle}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 def main():
     try:
         # Check if resume generator should be shown
@@ -4832,9 +4992,15 @@ def main():
         # Render sidebar with controls
         render_sidebar()
         
+        # Render hero banner at the top of main content
+        render_hero_banner(
+            st.session_state.user_profile if st.session_state.user_profile else {},
+            st.session_state.matched_jobs if st.session_state.get('dashboard_ready', False) else None
+        )
+        
         # Main dashboard area - only show after analysis
         if not st.session_state.get('dashboard_ready', False) or not st.session_state.matched_jobs:
-            # Show empty state
+            # Show empty state (but hero banner is already shown above)
             st.info("👆 Upload your CV in the sidebar and click 'Analyze Profile & Find Matches' to see your market positioning and ranked opportunities.")
             return
         
