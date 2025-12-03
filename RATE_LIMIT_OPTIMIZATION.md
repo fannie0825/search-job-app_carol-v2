@@ -2,14 +2,35 @@
 
 ## Summary
 
-This document describes the optimizations implemented to reduce API rate limit errors (429) when generating embeddings.
+This document describes the optimizations implemented to reduce API rate limit errors (429) when generating embeddings and improve overall performance.
 
 ## ✅ Vector Store Status
 
 **ChromaDB is installed and configured!** The vector store is located at `.chroma_db/` and is being used to:
 - Cache job embeddings (persistent storage)
-- Cache query embeddings (new feature)
+- Cache query embeddings
+- **NEW: Cache skill embeddings** (persistent across sessions)
 - Avoid redundant API calls for previously embedded content
+
+## 🚀 Major Performance Optimization (NEW)
+
+### Batch Skill Matching Optimization
+
+**Problem**: Previously, skill matching was extremely slow because:
+- User skills were re-embedded for EVERY job (N API calls for N jobs)
+- Job skills were embedded individually per job (another N API calls)
+- For 10 jobs with 5 skills each: ~20+ API calls just for skill matching
+
+**Solution**: Implemented batch skill matching:
+1. **User skills embedded ONCE** - not per job
+2. **All job skills collected and embedded in ONE batch**
+3. **Skills cached in ChromaDB** for future reuse
+4. **Zero API calls for cached skills**
+
+**Performance Improvement**:
+- **Before**: 10 jobs = ~20 API calls for skill matching
+- **After**: 10 jobs = 2 API calls (or 0 if all skills are cached!)
+- **Speed improvement**: 10x-100x faster for skill matching
 
 ## 🚀 Optimizations Implemented
 
@@ -91,8 +112,16 @@ MAX_JOBS_TO_INDEX = 40
 ### Vector Store Benefits
 - **Job Embeddings**: Stored permanently, only new jobs need embedding
 - **Query Embeddings**: Cached for repeated searches
+- **Skill Embeddings (NEW)**: Cached persistently, reused across sessions
 - **Persistent**: Survives app restarts
 - **Location**: `.chroma_db/` directory in your workspace
+
+### Skill Embedding Cache
+The skill embedding cache provides massive performance improvements:
+- Skills are hashed and stored in ChromaDB `skill_embeddings` collection
+- First search: Generates and caches all skill embeddings
+- Subsequent searches: Uses cached embeddings (no API calls!)
+- Common skills across jobs are embedded only once
 
 ## 🎯 Recommendations
 

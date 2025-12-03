@@ -1846,6 +1846,7 @@ class SemanticJobSearch:
         self.use_persistent_store = use_persistent_store
         self.chroma_client = None
         self.collection = None
+        self.skill_collection = None  # Separate collection for skill embeddings
         
         if use_persistent_store:
             try:
@@ -1855,6 +1856,11 @@ class SemanticJobSearch:
                 self.chroma_client = chromadb.PersistentClient(path=chroma_db_path)
                 self.collection = self.chroma_client.get_or_create_collection(
                     name="job_embeddings",
+                    metadata={"hnsw:space": "cosine"}
+                )
+                # Create skill embeddings collection for caching
+                self.skill_collection = self.chroma_client.get_or_create_collection(
+                    name="skill_embeddings",
                     metadata={"hnsw:space": "cosine"}
                 )
             except Exception as e:
@@ -2075,6 +2081,215 @@ class SemanticJobSearch:
         
         match_score = len(matched_skills) / len(job_skills_lower) if job_skills_lower else 0.0
         missing_skills = [job_skills_list[i] for i, js in enumerate(job_skills_lower) if js not in matched_skills]
+        
+        return min(match_score, 1.0), missing_skills[:5]
+    
+    def _get_skill_hash(self, skill):
+        """Generate a hash for a skill to use as ID in ChromaDB."""
+        return hashlib.md5(skill.lower().strip().encode()).hexdigest()
+    
+    def _get_cached_skill_embeddings(self, skills):
+        """Retrieve cached skill embeddings from ChromaDB.
+        
+        Returns:
+            tuple: (cached_dict, uncached_skills)
+            - cached_dict: {skill: embedding} for skills found in cache
+            - uncached_skills: list of skills not found in cache
+        """
+        if not self.use_persistent_store or not self.skill_collection or not skills:
+            return {}, list(skills)
+        
+        try:
+            skill_hashes = [self._get_skill_hash(s) for s in skills]
+            result = self.skill_collection.get(ids=skill_hashes, include=['embeddings', 'documents'])
+            
+            cached_dict = {}
+            cached_hashes = set()
+            if result and result.get('ids') and result.get('embeddings'):
+                for i, (skill_hash, emb) in enumerate(zip(result['ids'], result['embeddings'])):
+                    if emb is not None:
+                        # Get the original skill from documents
+                        original_skill = result['documents'][i] if result.get('documents') and i < len(result['documents']) else None
+                        if original_skill:
+                            cached_dict[original_skill] = emb
+                            cached_hashes.add(skill_hash)
+            
+            # Find uncached skills
+            uncached_skills = [s for s in skills if self._get_skill_hash(s) not in cached_hashes]
+            
+            return cached_dict, uncached_skills
+        except Exception:
+            return {}, list(skills)
+    
+    def _cache_skill_embeddings(self, skill_embeddings_dict):
+        """Store skill embeddings in ChromaDB cache."""
+        if not self.use_persistent_store or not self.skill_collection or not skill_embeddings_dict:
+            return
+        
+        try:
+            ids = []
+            embeddings = []
+            documents = []
+            
+            for skill, emb in skill_embeddings_dict.items():
+                if emb is not None:
+                    ids.append(self._get_skill_hash(skill))
+                    embeddings.append(emb)
+                    documents.append(skill)  # Store original skill text
+            
+            if ids:
+                self.skill_collection.upsert(
+                    ids=ids,
+                    embeddings=embeddings,
+                    documents=documents
+                )
+        except Exception:
+            pass  # Silently fail - caching is an optimization, not required
+    
+    def prepare_batch_skill_matching(self, user_skills, all_jobs):
+        """Pre-compute embeddings for user skills and all job skills in one batch.
+        
+        This is a MAJOR optimization: instead of embedding user skills N times
+        (once per job) and job skills individually, we:
+        1. Check ChromaDB cache for existing skill embeddings (FASTEST)
+        2. Embed only NEW skills (user + job) in ONE batch
+        3. Cache new embeddings for future use
+        4. Return lookup dicts for fast matching
+        
+        Args:
+            user_skills: Comma-separated string of user skills
+            all_jobs: List of job dictionaries with 'skills' key
+            
+        Returns:
+            tuple: (user_skill_embeddings_dict, job_skill_embeddings_dict, user_skills_list)
+        """
+        # Parse user skills
+        user_skills_list = [s.strip() for s in str(user_skills).split(',') if s.strip()]
+        if not user_skills_list:
+            return {}, {}, []
+        
+        # Collect all unique job skills
+        all_job_skills = set()
+        for job in all_jobs:
+            job_skills = job.get('skills', [])
+            for skill in job_skills:
+                if isinstance(skill, str) and skill.strip():
+                    all_job_skills.add(skill.strip())
+        
+        all_job_skills_list = list(all_job_skills)
+        
+        if not all_job_skills_list:
+            return {}, {}, user_skills_list
+        
+        # Combine all skills to check cache
+        all_skills = list(set(user_skills_list + all_job_skills_list))
+        
+        try:
+            # Check cache first (FAST - no API calls for cached skills)
+            cached_dict, uncached_skills = self._get_cached_skill_embeddings(all_skills)
+            
+            cache_hits = len(all_skills) - len(uncached_skills)
+            if cache_hits > 0:
+                st.info(f"⚡ Found {cache_hits} cached skill embeddings, generating {len(uncached_skills)} new ones...")
+            else:
+                st.info(f"🔄 Generating embeddings for {len(uncached_skills)} skills...")
+            
+            # Only generate embeddings for uncached skills
+            new_emb_dict = {}
+            total_tokens = 0
+            
+            if uncached_skills:
+                new_embeddings, tokens_used = self.embedding_gen.get_embeddings_batch(uncached_skills, batch_size=20)
+                total_tokens = tokens_used
+                
+                # Create dict from new embeddings
+                for i, skill in enumerate(uncached_skills):
+                    if i < len(new_embeddings) and new_embeddings[i] is not None:
+                        new_emb_dict[skill] = new_embeddings[i]
+                
+                # Cache new embeddings for future use
+                self._cache_skill_embeddings(new_emb_dict)
+            
+            # Update token tracker
+            if total_tokens > 0:
+                token_tracker = get_token_tracker()
+                if token_tracker:
+                    token_tracker.add_embedding_tokens(total_tokens)
+            
+            # Merge cached and new embeddings
+            all_emb_dict = {**cached_dict, **new_emb_dict}
+            
+            # Split into user and job dicts
+            user_emb_dict = {s: all_emb_dict[s] for s in user_skills_list if s in all_emb_dict}
+            job_emb_dict = {s: all_emb_dict[s] for s in all_job_skills_list if s in all_emb_dict}
+            
+            st.success(f"✅ Ready: {len(user_emb_dict)} user skills, {len(job_emb_dict)} job skills ({cache_hits} from cache)")
+            
+            return user_emb_dict, job_emb_dict, user_skills_list
+            
+        except Exception as e:
+            st.warning(f"⚠️ Failed to pre-compute skill embeddings: {e}")
+            return {}, {}, user_skills_list
+    
+    def calculate_skill_match_fast(self, user_skills_list, job_skills, user_emb_dict, job_emb_dict):
+        """Fast skill matching using pre-computed embeddings (no API calls).
+        
+        Args:
+            user_skills_list: List of user skills (strings)
+            job_skills: List of job skill strings
+            user_emb_dict: Pre-computed user skill embeddings {skill: embedding}
+            job_emb_dict: Pre-computed job skill embeddings {skill: embedding}
+            
+        Returns:
+            tuple: (match_score, missing_skills)
+        """
+        if not user_skills_list or not job_skills:
+            return 0.0, []
+        
+        job_skills_list = [s.strip() for s in job_skills if isinstance(s, str) and s.strip()]
+        if not job_skills_list:
+            return 0.0, []
+        
+        # Check if we have embeddings - if not, fall back to string matching
+        if not user_emb_dict or not job_emb_dict:
+            return self._calculate_skill_match_string_based(user_skills_list, job_skills_list)
+        
+        # Get embeddings for this job's skills from the pre-computed dict
+        job_embs = []
+        valid_job_skills = []
+        for skill in job_skills_list:
+            if skill in job_emb_dict:
+                job_embs.append(job_emb_dict[skill])
+                valid_job_skills.append(skill)
+        
+        # Get user skill embeddings
+        user_embs = [user_emb_dict[s] for s in user_skills_list if s in user_emb_dict]
+        
+        if not job_embs or not user_embs:
+            return self._calculate_skill_match_string_based(user_skills_list, job_skills_list)
+        
+        # Convert to numpy arrays and calculate similarity
+        user_embs_np = np.array(user_embs)
+        job_embs_np = np.array(job_embs)
+        
+        similarity_matrix = cosine_similarity(job_embs_np, user_embs_np)
+        
+        # Find matches using 0.7 threshold
+        similarity_threshold = 0.7
+        matched_skills = []
+        matched_indices = set()
+        
+        for job_idx, job_skill in enumerate(valid_job_skills):
+            best_match_idx = np.argmax(similarity_matrix[job_idx])
+            best_similarity = similarity_matrix[job_idx][best_match_idx]
+            
+            if best_similarity >= similarity_threshold and best_match_idx not in matched_indices:
+                matched_skills.append(job_skill)
+                matched_indices.add(best_match_idx)
+        
+        # Calculate match percentage based on original job skills count
+        match_score = len(matched_skills) / len(job_skills_list) if job_skills_list else 0.0
+        missing_skills = [js for js in job_skills_list if js not in matched_skills]
         
         return min(match_score, 1.0), missing_skills[:5]
 
@@ -3777,11 +3992,21 @@ def render_sidebar():
                     results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
                     
                     if results:
-                        # Calculate skill matches
+                        # OPTIMIZED: Pre-compute all skill embeddings in batch (major performance improvement)
+                        # This generates user skill embeddings ONCE and all job skill embeddings in ONE batch
+                        # instead of regenerating user skills for each job (N API calls -> 2 API calls)
                         user_skills = st.session_state.user_profile.get('skills', '')
+                        jobs_for_matching = [r['job'] for r in results]
+                        user_emb_dict, job_emb_dict, user_skills_list = search_engine.prepare_batch_skill_matching(
+                            user_skills, jobs_for_matching
+                        )
+                        
+                        # Calculate skill matches using pre-computed embeddings (no API calls)
                         for result in results:
                             job_skills = result['job'].get('skills', [])
-                            skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
+                            skill_score, missing_skills = search_engine.calculate_skill_match_fast(
+                                user_skills_list, job_skills, user_emb_dict, job_emb_dict
+                            )
                             result['skill_match_score'] = skill_score
                             result['missing_skills'] = missing_skills
                             
@@ -4139,21 +4364,31 @@ def display_refine_results_section(matched_jobs, user_profile):
                 
                 results = search_engine.search(query=resume_query, top_k=top_match_count, resume_embedding=resume_embedding)
                 
-                # Calculate skill matches
-                user_skills = st.session_state.user_profile.get('skills', '')
-                for result in results:
-                    job_skills = result['job'].get('skills', [])
-                    skill_score, missing_skills = search_engine.calculate_skill_match(user_skills, job_skills)
-                    result['skill_match_score'] = skill_score
-                    result['missing_skills'] = missing_skills
+                if results:
+                    # OPTIMIZED: Pre-compute all skill embeddings in batch (major performance improvement)
+                    # This generates user skill embeddings ONCE and all job skill embeddings in ONE batch
+                    user_skills = st.session_state.user_profile.get('skills', '')
+                    jobs_for_matching = [r['job'] for r in results]
+                    user_emb_dict, job_emb_dict, user_skills_list = search_engine.prepare_batch_skill_matching(
+                        user_skills, jobs_for_matching
+                    )
                     
-                    # Calculate combined match score (weighted: 60% semantic, 40% skill)
-                    semantic_score = result.get('similarity_score', 0.0)
-                    combined_score = (semantic_score * 0.6) + (skill_score * 0.4)
-                    result['combined_match_score'] = combined_score
-                
-                # Sort results by combined match score (highest to lowest)
-                results.sort(key=lambda x: x.get('combined_match_score', 0.0), reverse=True)
+                    # Calculate skill matches using pre-computed embeddings (no API calls)
+                    for result in results:
+                        job_skills = result['job'].get('skills', [])
+                        skill_score, missing_skills = search_engine.calculate_skill_match_fast(
+                            user_skills_list, job_skills, user_emb_dict, job_emb_dict
+                        )
+                        result['skill_match_score'] = skill_score
+                        result['missing_skills'] = missing_skills
+                        
+                        # Calculate combined match score (weighted: 60% semantic, 40% skill)
+                        semantic_score = result.get('similarity_score', 0.0)
+                        combined_score = (semantic_score * 0.6) + (skill_score * 0.4)
+                        result['combined_match_score'] = combined_score
+                    
+                    # Sort results by combined match score (highest to lowest)
+                    results.sort(key=lambda x: x.get('combined_match_score', 0.0), reverse=True)
                 
                 st.session_state.matched_jobs = results
                 st.session_state.dashboard_ready = True
