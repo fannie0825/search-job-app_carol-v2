@@ -261,14 +261,14 @@ st.set_page_config(
 st.markdown("""
 <style>
     /* CareerLens Design System - CSS Variables */
-    /* Matches CareerLens Design System: Navy & Blue Professional Theme */
+    /* Crisp, corporate blue identity */
     :root {
-        /* Light Mode Colors - CareerLens Design System */
-        --primary-accent: #3B82F6;        /* Accent Blue - Primary buttons, links, highlights */
-        --action-accent: #3B82F6;         /* Accent Blue - Match scores, action items */
-        --bg-main: #F3F4F6;               /* Main content area (Light Gray/Off-white) */
-        --bg-container: #FFFFFF;          /* Cards and containers (White) */
-        --text-primary: #111827;          /* Headings (Near Black) */
+        /* Light Mode Colors - Corporate Blue Theme */
+        --primary-accent: #0F62FE;        /* Strong corporate blue for buttons/accents */
+        --action-accent: #0F62FE;         /* Strong corporate blue for match scores, action items */
+        --bg-main: #FFFFFF;               /* Clean white background */
+        --bg-container: #F4F7FC;          /* Very pale blue-grey for sidebar and metric containers */
+        --text-primary: #161616;          /* High contrast dark grey text */
         --text-secondary: #374151;         /* Body text (Dark Gray) */
         --text-muted: #6B7280;            /* Muted text (Medium Gray) */
         --success-green: #10B981;         /* Success states (Green) */
@@ -278,13 +278,13 @@ st.markdown("""
         --navy-light: #2C3E50;            /* Lighter Navy - Hover states */
     }
     
-    /* Dark Mode Colors - CareerLens Design System */
+    /* Dark Mode Colors - Dark Mode Alternative */
     [data-theme="dark"] {
-        --primary-accent: #3B82F6;        /* Accent Blue - Consistent across modes */
-        --action-accent: #60A5FA;         /* Light Blue - Hover states in dark mode */
-        --bg-main: #111827;               /* Main background (Very Dark Gray) */
-        --bg-container: #1F2937;          /* Cards and containers (Dark Gray) */
-        --text-primary: #F9FAFB;          /* Primary text (White) */
+        --primary-accent: #4589FF;        /* Brighter blue for contrast against dark backgrounds */
+        --action-accent: #4589FF;         /* Brighter blue for hover states in dark mode */
+        --bg-main: #161616;               /* Deep dark grey background */
+        --bg-container: #262626;          /* Medium dark grey for sidebar/containers */
+        --text-primary: #F4F4F4;          /* Off-white text */
         --text-secondary: #D1D5DB;        /* Secondary text (Light Gray) */
         --text-muted: #9CA3AF;            /* Muted text in dark mode */
         --success-green: #10B981;         /* Success states (Green) */
@@ -298,11 +298,11 @@ st.markdown("""
     .stApp[data-theme="dark"],
     [data-theme="dark"] .stApp,
     .stApp[data-theme="dark"] :root {
-        --primary-accent: #3B82F6;
-        --action-accent: #60A5FA;
-        --bg-main: #111827;
-        --bg-container: #1F2937;
-        --text-primary: #F9FAFB;
+        --primary-accent: #4589FF;
+        --action-accent: #4589FF;
+        --bg-main: #161616;
+        --bg-container: #262626;
+        --text-primary: #F4F4F4;
         --text-secondary: #D1D5DB;
         --text-muted: #9CA3AF;
         --success-green: #10B981;
@@ -315,11 +315,11 @@ st.markdown("""
     /* Ensure CSS variables work in all contexts */
     html[data-theme="dark"],
     html[data-theme="dark"] :root {
-        --primary-accent: #3B82F6;
-        --action-accent: #60A5FA;
-        --bg-main: #111827;
-        --bg-container: #1F2937;
-        --text-primary: #F9FAFB;
+        --primary-accent: #4589FF;
+        --action-accent: #4589FF;
+        --bg-main: #161616;
+        --bg-container: #262626;
+        --text-primary: #F4F4F4;
         --text-secondary: #D1D5DB;
         --text-muted: #9CA3AF;
         --success-green: #10B981;

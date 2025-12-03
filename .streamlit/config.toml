@@ -1,20 +1,20 @@
 [theme]
 # CareerLens Light Mode Theme
-# Matches CareerLens Design System - Professional Navy & Blue Theme
+# Crisp, corporate blue identity
 base = "light"
-primaryColor = "#3B82F6"           # Accent Blue - Primary buttons, links, highlights
-backgroundColor = "#F3F4F6"         # Main content area background (Light Gray/Off-white)
-secondaryBackgroundColor = "#FFFFFF" # Cards and containers (White)
-textColor = "#111827"               # Headings (Near Black)
+primaryColor = "#0F62FE"            # Strong corporate blue for buttons/accents
+backgroundColor = "#FFFFFF"         # Clean white background
+secondaryBackgroundColor = "#F4F7FC" # Very pale blue-grey for the sidebar and metric containers
+textColor = "#161616"               # High contrast dark grey text
 font = "sans serif"                 # Streamlit default (Inter/Roboto loaded via CSS)
 
 # CareerLens Dark Mode Theme
-# Matches CareerLens Design System - Dark Professional Theme
+# Dark Mode Alternative
 [theme.dark]
-primaryColor = "#3B82F6"            # Accent Blue - Consistent across modes
-backgroundColor = "#111827"         # Main background (Very Dark Gray)
-secondaryBackgroundColor = "#1F2937" # Cards and containers (Dark Gray)
-textColor = "#F9FAFB"               # Primary text (White)
+primaryColor = "#4589FF"            # Brighter blue for contrast against dark backgrounds
+backgroundColor = "#161616"         # Deep dark grey background
+secondaryBackgroundColor = "#262626" # Medium dark grey for sidebar/containers
+textColor = "#F4F4F4"               # Off-white text
 font = "sans serif"                 # Streamlit default (Inter/Roboto loaded via CSS)
 
 # Additional Streamlit Configuration
