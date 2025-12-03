@@ -4,6 +4,17 @@
 
 This document describes the optimizations implemented to reduce API rate limit errors (429) when generating embeddings.
 
+## 🚀 Recent Performance Improvements (v2.0)
+
+The following optimizations significantly reduce slowness and rate limiting issues:
+
+1. **Profile Extraction Pass 2 Disabled by Default**: Saves 10-30 seconds per resume upload
+2. **Reduced Job Indexing**: Now indexes 25 jobs max (down from 50), saving ~50% embedding API calls
+3. **Fast Skill Matching**: Uses instant string-based matching instead of slow embedding-based matching
+4. **Batch Delay Reduced**: 0.5s between batches (down from 1s)
+5. **Skill Embedding Caching**: User skills are cached to avoid regeneration
+6. **File Upload Caching**: Prevents re-processing same resume on page refresh
+
 ## ✅ Vector Store Status
 
 **ChromaDB is installed and configured!** The vector store is located at `.chroma_db/` and is being used to:
@@ -46,17 +57,22 @@ You can configure rate limiting behavior via environment variables or Streamlit 
 ### Environment Variables
 
 ```bash
-# Batch size for embeddings (default: 20, minimum: 5)
+# Batch size for embeddings (default: 15, minimum: 5)
 EMBEDDING_BATCH_SIZE=15
 
-# Delay between batches in seconds (default: 1, minimum: 0)
-EMBEDDING_BATCH_DELAY=2
+# Delay between batches in seconds (default: 0.5, minimum: 0)
+EMBEDDING_BATCH_DELAY=0.5
 
-# Delay when rate limited in seconds (default: 2, minimum: 1)
-EMBEDDING_RATE_LIMIT_DELAY=3
+# Maximum jobs to index (default: 25, minimum: 10)
+MAX_JOBS_TO_INDEX=25
 
-# Maximum jobs to index (default: 50, minimum: 30)
-MAX_JOBS_TO_INDEX=40
+# Enable profile extraction Pass 2 for higher accuracy (default: false)
+# Set to true to enable self-correction pass (adds 10-30s)
+ENABLE_PROFILE_PASS2=false
+
+# Use fast string-based skill matching (default: true)
+# Set to false for slower semantic matching with embeddings
+USE_FAST_SKILL_MATCHING=true
 ```
 
 ### Streamlit Secrets
@@ -65,18 +81,21 @@ Add to `.streamlit/secrets.toml`:
 
 ```toml
 EMBEDDING_BATCH_SIZE = 15
-EMBEDDING_BATCH_DELAY = 2
-EMBEDDING_RATE_LIMIT_DELAY = 3
-MAX_JOBS_TO_INDEX = 40
+EMBEDDING_BATCH_DELAY = 0.5
+MAX_JOBS_TO_INDEX = 25
+# Optional: Enable for higher accuracy (slower)
+# ENABLE_PROFILE_PASS2 = "true"
+# USE_FAST_SKILL_MATCHING = "false"
 ```
 
 ## 📊 How It Works
 
 ### Normal Operation
-1. Jobs are embedded in batches of 20 (configurable)
-2. 1-second delay between batches
-3. Query embeddings are cached after first use
-4. Skill matching uses embeddings when available
+1. Jobs are embedded in batches of 15 (configurable)
+2. 0.5-second delay between batches (configurable)
+3. Resume embedding is generated once and cached in session
+4. Skill matching uses fast string-based matching by default (instant)
+5. User skills embeddings are cached to avoid regeneration
 
 ### When Rate Limited (429)
 1. **Detection**: System detects 429 status code
@@ -96,26 +115,44 @@ MAX_JOBS_TO_INDEX = 40
 
 ## 🎯 Recommendations
 
+### Default Configuration (Balanced Speed/Quality)
+```bash
+EMBEDDING_BATCH_SIZE=15
+EMBEDDING_BATCH_DELAY=0.5
+MAX_JOBS_TO_INDEX=25
+USE_FAST_SKILL_MATCHING=true
+ENABLE_PROFILE_PASS2=false
+```
+**Expected Resume Upload Time**: 10-20 seconds
+**Expected Job Analysis Time**: 15-30 seconds
+
 ### For High Rate Limits (e.g., 1000+ requests/minute)
 ```bash
-EMBEDDING_BATCH_SIZE=30
-EMBEDDING_BATCH_DELAY=0.5
+EMBEDDING_BATCH_SIZE=25
+EMBEDDING_BATCH_DELAY=0.2
+MAX_JOBS_TO_INDEX=40
 ```
 
 ### For Low Rate Limits (e.g., 100 requests/minute)
 ```bash
 EMBEDDING_BATCH_SIZE=10
-EMBEDDING_BATCH_DELAY=2
-EMBEDDING_RATE_LIMIT_DELAY=5
+EMBEDDING_BATCH_DELAY=1.5
+MAX_JOBS_TO_INDEX=20
 ```
 
 ### For Very Low Rate Limits (e.g., 20 requests/minute)
 ```bash
 EMBEDDING_BATCH_SIZE=5
 EMBEDDING_BATCH_DELAY=3
-EMBEDDING_RATE_LIMIT_DELAY=10
-MAX_JOBS_TO_INDEX=30
+MAX_JOBS_TO_INDEX=15
 ```
+
+### For Maximum Accuracy (Slower)
+```bash
+ENABLE_PROFILE_PASS2=true
+USE_FAST_SKILL_MATCHING=false
+```
+**Note**: This adds 20-40 seconds to resume processing.
 
 ## 🔍 Monitoring
 
