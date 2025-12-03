@@ -296,8 +296,11 @@ def _chunked_sleep(delay, message_prefix=""):
     Streamlit Cloud WebSocket connections can timeout if there's no activity for
     extended periods. This function breaks long sleeps into smaller chunks with
     UI updates to keep the connection alive.
+    
+    IMPORTANT: Streamlit Cloud's logstream WebSocket can disconnect after ~15-20s
+    of inactivity. We use 2-second chunks to ensure frequent UI updates.
     """
-    if delay <= 3:
+    if delay <= 2:
         time.sleep(delay)
         return
     
@@ -309,20 +312,31 @@ def _chunked_sleep(delay, message_prefix=""):
         else:
             # Even without a message, update UI to keep WebSocket alive
             status_placeholder.caption(f"⏳ Processing... ({remaining}s)")
-        chunk = min(3, remaining)  # Max 3 seconds at a time for better responsiveness
+        chunk = min(2, remaining)  # Max 2 seconds at a time for WebSocket stability
         time.sleep(chunk)
         remaining -= chunk
     status_placeholder.empty()
 
 
-def _websocket_keepalive():
+def _websocket_keepalive(message=None):
     """Send a lightweight UI update to keep WebSocket connection alive.
     
     Call this periodically during long-running operations that don't have
     their own progress indicators.
+    
+    The Streamlit Cloud logstream WebSocket (/~/logstream) can disconnect
+    after ~15-20s of inactivity. This function sends a minimal UI update
+    to keep the connection alive.
+    
+    Args:
+        message: Optional status message to display briefly (then cleared)
     """
     # Use an empty placeholder to trigger a minimal UI update
     placeholder = st.empty()
+    if message:
+        placeholder.caption(f"⏳ {message}")
+        # Brief display before clearing
+        time.sleep(0.1)
     placeholder.empty()
 
 
@@ -1695,7 +1709,8 @@ class APIMEmbeddingGenerator:
             # Note: api_call_with_retry handles 429 errors with exponential backoff,
             # so this is just a gentle spacing between successful batches
             if i > 0 and EMBEDDING_BATCH_DELAY > 0:
-                time.sleep(EMBEDDING_BATCH_DELAY)
+                # Use chunked sleep to keep WebSocket alive during delays
+                _chunked_sleep(EMBEDDING_BATCH_DELAY, f"Batch {batch_num}/{total_batches}")
             
             try:
                 payload = {"input": batch, "model": self.deployment}
@@ -1703,8 +1718,11 @@ class APIMEmbeddingGenerator:
                 # Estimate tokens for fallback tracking
                 estimated_batch_tokens = sum(len(self.encoding.encode(text)) for text in batch)
                 
+                # Send keepalive before potentially long API call
+                _websocket_keepalive(f"Processing batch {batch_num}/{total_batches}...")
+                
                 def make_request():
-                    return requests.post(self.url, headers=self.headers, json=payload, timeout=30)
+                    return requests.post(self.url, headers=self.headers, json=payload, timeout=25)
                 
                 # api_call_with_retry handles rate limiting with exponential backoff
                 response = api_call_with_retry(make_request, max_retries=3)
@@ -1855,8 +1873,11 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks, no additional t
                 "response_format": {"type": "json_object"}  # Force JSON output
             }
             
+            # Send keepalive before potentially long LLM call
+            _websocket_keepalive("Generating resume...")
+            
             def make_request():
-                return requests.post(self.url, headers=self.headers, json=payload, timeout=60)
+                return requests.post(self.url, headers=self.headers, json=payload, timeout=45)
             
             response = api_call_with_retry(make_request, max_retries=3)
             
@@ -2187,12 +2208,13 @@ class RateLimiter:
             wait_time = 60 - (now - oldest_request) + 1  # Add 1 second buffer
             if wait_time > 0:
                 # Break long waits into smaller chunks to prevent WebSocket timeout
-                # Streamlit Cloud may disconnect on long blocking operations
+                # Streamlit Cloud's logstream WebSocket can disconnect after ~15-20s of inactivity
+                # Using 2-second chunks ensures we update the UI frequently enough
                 status_placeholder = st.empty()
                 remaining = int(wait_time)
                 while remaining > 0:
                     status_placeholder.info(f"⏳ Rate limiting: Waiting {remaining}s to stay under {self.max_requests_per_minute} requests/minute...")
-                    chunk = min(5, remaining)  # Wait max 5 seconds at a time
+                    chunk = min(2, remaining)  # Max 2 seconds at a time for WebSocket stability
                     time.sleep(chunk)
                     remaining -= chunk
                 status_placeholder.empty()
@@ -2236,8 +2258,11 @@ class IndeedScraperAPI:
             # Enforce rate limiting before making the request
             self.rate_limiter.wait_if_needed()
             
+            # Send keepalive before potentially long API call
+            _websocket_keepalive("Searching jobs...")
+            
             def make_request():
-                return requests.post(self.url, headers=self.headers, json=payload, timeout=60)
+                return requests.post(self.url, headers=self.headers, json=payload, timeout=45)
             
             response = api_call_with_retry(make_request, max_retries=3, initial_delay=3)
             
@@ -3384,12 +3409,15 @@ Important:
             "response_format": {"type": "json_object"}
         }
         
+        # Send keepalive before LLM API call (can take 10-30s)
+        _websocket_keepalive("Extracting profile information...")
+        
         def make_request_pass1():
             return requests.post(
                 text_gen.url,
                 headers=text_gen.headers,
                 json=payload_pass1,
-                timeout=60
+                timeout=45
             )
         
         response_pass1 = api_call_with_retry(make_request_pass1, max_retries=3)
@@ -3488,12 +3516,15 @@ Return ONLY valid JSON, no additional text or markdown."""
             "response_format": {"type": "json_object"}
         }
         
+        # Send keepalive before second LLM API call
+        _websocket_keepalive("Verifying profile data...")
+        
         def make_request_pass2():
             return requests.post(
                 text_gen.url,
                 headers=text_gen.headers,
                 json=payload_pass2,
-                timeout=60
+                timeout=45
             )
         
         response_pass2 = api_call_with_retry(make_request_pass2, max_retries=3)
