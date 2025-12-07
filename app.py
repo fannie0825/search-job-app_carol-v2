@@ -1,6 +1,7 @@
 import warnings
 import os
 import gc
+import sys
 warnings.filterwarnings('ignore')
 
 # Streamlit Cloud optimization: Set log level to error for production
@@ -9,6 +10,10 @@ os.environ['STREAMLIT_LOG_LEVEL'] = 'error'
 os.environ['STREAMLIT_BROWSER_GATHER_USAGE_STATS'] = 'false'
 # Reduce SQLite memory footprint (used by ChromaDB)
 os.environ['SQLITE_TMPDIR'] = '/tmp'
+# Disable ChromaDB anonymous telemetry
+os.environ['ANONYMIZED_TELEMETRY'] = 'false'
+# Streamlit Cloud memory optimization: Limit SQLite cache size
+os.environ['SQLITE_DEFAULT_PAGE_SIZE'] = '1024'
 
 import streamlit as st
 
@@ -23,6 +28,7 @@ st.set_page_config(
     }
 )
 
+# Core imports with error handling
 import requests
 import numpy as np
 import pandas as pd
@@ -34,13 +40,47 @@ from email.utils import parsedate_to_datetime
 import json
 import re
 from io import BytesIO
-import PyPDF2
-from docx import Document
-import chromadb
-from chromadb.config import Settings
-import tiktoken
 import hashlib
 import base64
+
+# Document processing imports with graceful fallback
+try:
+    import PyPDF2
+    PYPDF2_AVAILABLE = True
+except ImportError:
+    PYPDF2_AVAILABLE = False
+    st.warning("⚠️ PyPDF2 not available - PDF upload disabled")
+
+try:
+    from docx import Document
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+    st.warning("⚠️ python-docx not available - DOCX upload disabled")
+
+# ChromaDB import with graceful fallback (memory-intensive)
+CHROMADB_AVAILABLE = False
+chromadb = None
+Settings = None
+try:
+    import chromadb as _chromadb
+    from chromadb.config import Settings as _Settings
+    chromadb = _chromadb
+    Settings = _Settings
+    CHROMADB_AVAILABLE = True
+except ImportError as e:
+    # ChromaDB not available - will use simple in-memory storage
+    pass
+except Exception as e:
+    # ChromaDB import failed - will use simple in-memory storage
+    pass
+
+# Tokenization import
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
 
 # Periodic garbage collection to reduce memory pressure on Streamlit Cloud
 gc.collect()
@@ -1430,14 +1470,25 @@ st.markdown("""
 <script>
 (function() {
     // WebSocket connection monitor and auto-reconnection handler
+    // Optimized for Streamlit Cloud deployment stability
     const overlay = document.getElementById('ws-reconnecting-overlay');
     let isReconnecting = false;
     let reconnectAttempts = 0;
-    const maxReconnectAttempts = 5;
+    const maxReconnectAttempts = 8;  // Increased for better resilience
     let reconnectTimer = null;
     let connectionCheckTimer = null;
+    let lastErrorTime = 0;
+    const ERROR_DEBOUNCE_MS = 2000;  // Debounce rapid error events
+    let activeConnections = 0;  // Track active WebSocket connections
     
     function showReconnectingOverlay() {
+        // Debounce rapid reconnection triggers
+        const now = Date.now();
+        if (now - lastErrorTime < ERROR_DEBOUNCE_MS) {
+            return;  // Skip if we just showed the overlay
+        }
+        lastErrorTime = now;
+        
         if (overlay && !isReconnecting) {
             isReconnecting = true;
             overlay.classList.add('active');
@@ -1453,22 +1504,40 @@ st.markdown("""
     }
     
     function attemptReconnect() {
+        // Clear any existing timer
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+        }
+        
         if (reconnectAttempts >= maxReconnectAttempts) {
             // Max attempts reached, reload the page
             console.log('CareerLens: Max reconnection attempts reached, reloading page...');
-            window.location.reload();
+            // Use soft reload first (preserves some state)
+            try {
+                window.location.href = window.location.href;
+            } catch (e) {
+                window.location.reload();
+            }
             return;
         }
         
         reconnectAttempts++;
         console.log('CareerLens: Reconnection attempt ' + reconnectAttempts + '/' + maxReconnectAttempts);
         
-        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 16000);
+        // Exponential backoff with jitter: base * 2^attempt + random(0-500ms)
+        const baseDelay = 1500;  // Start with 1.5s
+        const delay = Math.min(baseDelay * Math.pow(1.5, reconnectAttempts - 1), 20000) + Math.random() * 500;
         
         reconnectTimer = setTimeout(function() {
             // Check if we're back online
             if (navigator.onLine) {
+                // Check if Streamlit has already reconnected (look for active streams)
+                if (activeConnections > 0) {
+                    console.log('CareerLens: Connection restored via active WebSocket');
+                    hideReconnectingOverlay();
+                    return;
+                }
+                
                 // Try to reload the Streamlit connection by triggering a rerun
                 // This is safer than a full page reload
                 try {
@@ -1481,11 +1550,11 @@ st.markdown("""
                         return;
                     }
                 } catch (e) {
-                    console.log('CareerLens: Could not trigger Streamlit rerun, will reload page');
+                    console.log('CareerLens: Could not trigger Streamlit rerun');
                 }
                 
-                // If we still can't reconnect after delay, reload
-                if (reconnectAttempts >= 3) {
+                // If we still can't reconnect after several attempts, reload
+                if (reconnectAttempts >= 5) {
                     window.location.reload();
                 } else {
                     attemptReconnect();
@@ -1505,12 +1574,17 @@ st.markdown("""
     
     window.addEventListener('online', function() {
         console.log('CareerLens: Network connection restored');
-        // Wait a moment for connection to stabilize, then hide overlay
+        // Wait a moment for connection to stabilize
         setTimeout(function() {
-            hideReconnectingOverlay();
-            // Reload to restore Streamlit connection
-            window.location.reload();
-        }, 1000);
+            if (activeConnections > 0) {
+                // Already have active connections, just hide overlay
+                hideReconnectingOverlay();
+            } else {
+                // No active connections, need to reload
+                hideReconnectingOverlay();
+                window.location.reload();
+            }
+        }, 2000);
     });
     
     // Monitor WebSocket connections (Streamlit uses WebSockets)
@@ -1519,24 +1593,35 @@ st.markdown("""
     window.WebSocket = function(url, protocols) {
         const ws = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
         
-        // Only monitor Streamlit WebSocket connections
-        if (url && (url.includes('_stcore/stream') || url.includes('logstream'))) {
+        // Only monitor Streamlit WebSocket connections (not third-party)
+        const isStreamlitWs = url && (url.includes('_stcore/stream') || url.includes('logstream'));
+        
+        if (isStreamlitWs) {
             ws.addEventListener('close', function(event) {
+                activeConnections = Math.max(0, activeConnections - 1);
                 // Only handle unexpected closes (not normal closures)
-                if (event.code !== 1000 && event.code !== 1001) {
-                    console.log('CareerLens: Streamlit WebSocket closed unexpectedly, code:', event.code);
-                    showReconnectingOverlay();
-                    attemptReconnect();
+                // 1000 = normal, 1001 = going away, 1005 = no status (browser close)
+                if (event.code !== 1000 && event.code !== 1001 && event.code !== 1005) {
+                    console.log('CareerLens: Streamlit WebSocket closed, code:', event.code);
+                    // Only show reconnecting if we have no other active connections
+                    if (activeConnections === 0) {
+                        showReconnectingOverlay();
+                        attemptReconnect();
+                    }
                 }
             });
             
             ws.addEventListener('error', function(event) {
                 console.log('CareerLens: Streamlit WebSocket error');
-                showReconnectingOverlay();
-                attemptReconnect();
+                // Only trigger reconnect if this is our last connection
+                if (activeConnections <= 1) {
+                    showReconnectingOverlay();
+                    attemptReconnect();
+                }
             });
             
             ws.addEventListener('open', function() {
+                activeConnections++;
                 console.log('CareerLens: Streamlit WebSocket connected');
                 hideReconnectingOverlay();
             });
@@ -2394,6 +2479,12 @@ class SemanticJobSearch:
         if _is_streamlit_cloud():
             use_persistent_store = False
         
+        # If ChromaDB is not available, skip vector store initialization
+        if not CHROMADB_AVAILABLE:
+            use_persistent_store = False
+            self.use_persistent_store = False
+            return  # Use simple list storage fallback
+        
         self.use_persistent_store = use_persistent_store
         
         if use_persistent_store:
@@ -2421,7 +2512,7 @@ class SemanticJobSearch:
                 )
             except Exception as e:
                 # Final fallback: no ChromaDB, use simple list storage
-                pass
+                self.use_persistent_store = False
     
     def _get_job_hash(self, job):
         """Generate a hash for a job to use as ID."""
@@ -3231,6 +3322,10 @@ def extract_text_from_resume(uploaded_file):
         file_type = uploaded_file.name.split('.')[-1].lower()
         
         if file_type == 'pdf':
+            # Check if PyPDF2 is available
+            if not PYPDF2_AVAILABLE:
+                st.error("PDF processing is not available. Please upload a TXT file instead.")
+                return None
             # Extract text from PDF
             uploaded_file.seek(0)  # Reset file pointer
             pdf_reader = PyPDF2.PdfReader(uploaded_file)
@@ -3240,6 +3335,10 @@ def extract_text_from_resume(uploaded_file):
             return text
         
         elif file_type == 'docx':
+            # Check if python-docx is available
+            if not DOCX_AVAILABLE:
+                st.error("DOCX processing is not available. Please upload a TXT or PDF file instead.")
+                return None
             # Extract text from DOCX
             uploaded_file.seek(0)  # Reset file pointer
             doc = Document(uploaded_file)
@@ -3567,10 +3666,17 @@ def display_user_profile():
     st.subheader("📄 Upload Your Resume (Optional)")
     st.caption("Upload your resume to automatically extract your information")
     
+    # Determine available file types based on available libraries
+    available_types = ['txt']  # TXT is always available
+    if PYPDF2_AVAILABLE:
+        available_types.insert(0, 'pdf')
+    if DOCX_AVAILABLE:
+        available_types.insert(1 if 'pdf' in available_types else 0, 'docx')
+    
     uploaded_file = st.file_uploader(
         "Choose a resume file",
-        type=['pdf', 'docx', 'txt'],
-        help="Supported formats: PDF, DOCX, TXT"
+        type=available_types,
+        help=f"Supported formats: {', '.join(t.upper() for t in available_types)}"
     )
     
     if uploaded_file is not None:
@@ -3874,6 +3980,11 @@ Return ONLY the improved bullet point, no additional text."""
 
 def generate_docx_from_json(resume_data, filename="resume.docx"):
     """Generate a professional .docx file from structured resume JSON"""
+    # Check if python-docx is available
+    if not DOCX_AVAILABLE:
+        st.error("DOCX generation is not available. Please download as TXT instead.")
+        return None
+    
     try:
         from docx import Document
         from docx.shared import Inches, Pt, RGBColor
@@ -4237,10 +4348,18 @@ def render_sidebar():
         # Resume Upload Section
         st.markdown("---")
         st.markdown("### 1. Upload your CV to begin")
+        
+        # Determine available file types based on available libraries
+        sidebar_available_types = ['txt']  # TXT always available
+        if PYPDF2_AVAILABLE:
+            sidebar_available_types.insert(0, 'pdf')
+        if DOCX_AVAILABLE:
+            sidebar_available_types.insert(1 if 'pdf' in sidebar_available_types else 0, 'docx')
+        
         uploaded_file = st.file_uploader(
             "Upload your resume",
-            type=['pdf', 'docx'],
-            help="We parse your skills and experience to benchmark you against the market.",
+            type=sidebar_available_types,
+            help=f"Supported: {', '.join(t.upper() for t in sidebar_available_types)}. We parse your skills and experience to benchmark you against the market.",
             key="careerlens_resume_upload",
             label_visibility="collapsed"
         )
@@ -5449,10 +5568,68 @@ def main():
         """)
         st.exception(e)
 
+def _check_startup_health():
+    """Perform startup health checks to ensure the app can run.
+    
+    Returns True if all checks pass, False otherwise.
+    """
+    issues = []
+    
+    # Check required imports
+    if not PYPDF2_AVAILABLE:
+        issues.append("PyPDF2 not available - PDF upload will be disabled")
+    if not DOCX_AVAILABLE:
+        issues.append("python-docx not available - DOCX upload will be disabled")
+    if not CHROMADB_AVAILABLE:
+        issues.append("ChromaDB not available - using simple in-memory storage")
+    
+    # Check secrets (gracefully)
+    try:
+        secrets_available = hasattr(st, 'secrets')
+        if secrets_available:
+            azure_key = st.secrets.get("AZURE_OPENAI_API_KEY")
+            azure_endpoint = st.secrets.get("AZURE_OPENAI_ENDPOINT")
+            rapidapi_key = st.secrets.get("RAPIDAPI_KEY")
+            
+            if not azure_key or not azure_endpoint:
+                issues.append("Azure OpenAI credentials not configured")
+            if not rapidapi_key:
+                issues.append("RapidAPI key not configured")
+    except Exception:
+        # Secrets not available yet (first load) - this is okay
+        pass
+    
+    # Log issues but don't block startup
+    if issues:
+        for issue in issues:
+            st.sidebar.warning(f"⚠️ {issue}")
+    
+    return True  # Always allow startup, show warnings instead
+
+
 if __name__ == "__main__":
+    # Run garbage collection before startup
+    gc.collect()
+    
+    # Perform startup health checks (non-blocking)
+    _check_startup_health()
+    
     # Wrap main() in error handling to prevent crashes
     try:
         main()
+    except MemoryError:
+        # Handle memory errors gracefully
+        gc.collect()
+        st.error("""
+        ❌ **Memory Error**
+        
+        The application ran out of memory. This can happen on Streamlit Cloud with large datasets.
+        
+        **Solutions:**
+        1. Refresh the page to clear cached data
+        2. Try analyzing fewer jobs at once
+        3. Close other browser tabs to free memory
+        """)
     except Exception as e:
         st.error(f"""
         ❌ **Startup Error**
@@ -5467,3 +5644,6 @@ if __name__ == "__main__":
         Please check your Streamlit Cloud logs for more details.
         """)
         st.exception(e)
+    finally:
+        # Final garbage collection
+        gc.collect()

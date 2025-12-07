@@ -8,55 +8,39 @@ secondaryBackgroundColor = "#F4F7FC" # Very pale blue-grey for the sidebar and m
 textColor = "#161616"               # High contrast dark grey text
 font = "sans serif"                 # Streamlit default (Inter/Roboto loaded via CSS)
 
-# CareerLens Dark Mode Theme
-# Dark Mode Alternative
-[theme.dark]
-primaryColor = "#4589FF"            # Brighter blue for contrast against dark backgrounds
-backgroundColor = "#161616"         # Deep dark grey background
-secondaryBackgroundColor = "#262626" # Medium dark grey for sidebar/containers
-textColor = "#F4F4F4"               # Off-white text
-font = "sans serif"                 # Streamlit default (Inter/Roboto loaded via CSS)
-
 # Streamlit Cloud Configuration
 # Optimized for Streamlit Cloud deployment with WebSocket stability
 [server]
-# File watcher disabled for Streamlit Cloud (not needed, reduces resource usage)
+# File watcher disabled for Streamlit Cloud (reduces memory usage)
 fileWatcherType = "none"
-# CORS enabled for Streamlit Cloud
+# CORS enabled for Streamlit Cloud CDN/proxy compatibility
 enableCORS = true
 # XSRF protection enabled for security
 enableXsrfProtection = true
-# Port and address are handled automatically by Streamlit Cloud
 # Maximum upload size (in MB) - optimized for resume uploads
-maxUploadSize = 25
+maxUploadSize = 10
 # Maximum message size (in MB) - reduced for WebSocket stability
-# Smaller messages = fewer dropped connections
-maxMessageSize = 5
-# WebSocket compression - DISABLED to improve connection stability
-# Compression can cause issues with some proxy/CDN configurations
+# Smaller messages = fewer dropped connections on slow networks
+maxMessageSize = 3
+# WebSocket compression - DISABLED for connection stability
+# Compression can cause issues with Streamlit Cloud's proxy/CDN
 enableWebsocketCompression = false
-# Headless mode for Streamlit Cloud
+# Headless mode required for Streamlit Cloud
 headless = true
-# Run on save disabled (not applicable for Streamlit Cloud)
+# Run on save disabled (not applicable for cloud deployment)
 runOnSave = false
-# Script run timeout - INCREASED to allow long-running operations
+# Script run timeout - allow long-running operations (10 minutes)
 # This prevents premature termination during job analysis
 scriptRunTimeout = 600
-# Enable WebSocket ping/pong to keep connections alive
-# This helps prevent the /~/logstream WebSocket from disconnecting
+# Disable static serving (not needed for Streamlit Cloud)
 enableStaticServing = false
-
-# WebSocket keep-alive settings for connection stability
-# These settings help prevent the WebSocket from disconnecting during long operations
-
-# Server address binding (0.0.0.0 for Streamlit Cloud compatibility)
+# Server address binding (0.0.0.0 for container compatibility)
 address = "0.0.0.0"
 
 # Browser configuration
 [browser]
-# Disable usage stats collection
+# Disable usage stats collection for privacy and performance
 gatherUsageStats = false
-# Server address is automatically set by Streamlit Cloud
 
 # UI Configuration
 [ui]
@@ -69,16 +53,24 @@ hideSidebarNav = false
 # Production mode (not development)
 developmentMode = false
 
-# Runner Configuration - prevents script timeouts
+# Runner Configuration - prevents script timeouts and memory issues
 [runner]
-# Increased magic enabled for better compatibility
+# Magic commands enabled for better compatibility
 magicEnabled = true
-# Allow large outputs without killing the script
+# Post-script garbage collection to free memory
 postScriptGC = true
-# Fast reruns enabled
+# Fast reruns enabled for better UX
 fastReruns = true
 
 # Logger Configuration
 [logger]
 # Log level: ERROR only for production on Streamlit Cloud
+# This reduces log volume and improves performance
 level = "error"
+
+# Client Configuration
+[client]
+# Show error details in client (helpful for debugging)
+showErrorDetails = true
+# Toolbar mode: auto (shows when needed)
+toolbarMode = "auto"
