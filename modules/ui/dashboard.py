@@ -47,7 +47,7 @@ _ICON_PATHS = {
 def _icon_svg(name: str, *, size: int = 20, stroke: Optional[str] = None, opacity: float = 1.0) -> str:
     """Return an inline SVG icon that matches the requested brand specs."""
     path = _ICON_PATHS.get(name, "")
-    stroke_color = stroke or "var(--cl-icon-default)"
+    stroke_color = stroke or "var(--icon-default)"
     return (
         f'<svg aria-hidden="true" width="{size}" height="{size}" viewBox="0 0 24 24" '
         f'fill="none" stroke="{stroke_color}" stroke-width="1.75" stroke-linecap="round" '
@@ -66,39 +66,51 @@ def _inject_dashboard_styles() -> None:
             @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
             :root {
-                --cl-primary: #2CC3F6;
-                --cl-primary-hover: #22ACE0;
-                --cl-secondary: #7B8AA0;
-                --cl-sidebar-bg: #0A1725;
-                --cl-hero-start: #0D1B2A;
-                --cl-hero-end: #162A3A;
-                --cl-card-surface: #F5F7FB;
-                --cl-card-inner: #FFFFFF;
-                --cl-card-border: #E3E8F2;
-                --cl-title: #1B2A41;
-                --cl-body: #2A3B52;
-                --cl-muted: #7B8AA0;
-                --cl-positive: #2CC3F6;
-                --cl-warning: #F85F73;
-                --cl-success: #3CCB7C;
-                --cl-info: #5C7CFA;
-                --cl-divider: #D8DEE9;
-                --cl-shadow: 0 4px 12px rgba(10, 24, 38, 0.15);
-                --cl-shadow-hover: 0 6px 18px rgba(10, 24, 38, 0.20);
-                --cl-radius-card: 12px;
-                --cl-radius-input: 8px;
-                --cl-radius-badge: 6px;
-                --cl-gap-desktop: 24px;
-                --cl-gap-tablet: 16px;
-                --cl-gap-mobile: 12px;
-                --cl-icon-default: #7B8AA0;
-                --cl-icon-active: #2CC3F6;
+                --color-brand: #2CC3F6;
+                --color-brand-hover: #22ACE0;
+                --color-secondary: #7B8AA0;
+                --color-bg-app: #0D1B2A;
+                --color-bg-hero-left: #0D1B2A;
+                --color-bg-hero-right: #162A3A;
+                --color-bg-sidebar: #0A1725;
+                --color-bg-card: #F5F7FB;
+                --color-bg-white: #FFFFFF;
+                --color-border-card: #E3E8F2;
+                --color-line-muted: #D8DEE9;
+                --color-text-strong: #1B2A41;
+                --color-text-body: #2A3B52;
+                --color-text-muted: #7B8AA0;
+                --color-text-inverse: #FFFFFF;
+                --color-positive: #2CC3F6;
+                --color-warning: #F85F73;
+                --color-success: #3CCB7C;
+                --color-info: #5C7CFA;
+                --radius-card: 12px;
+                --radius-input: 8px;
+                --radius-badge: 6px;
+                --shadow-card: 0 4px 12px rgba(10, 24, 38, 0.15);
+                --shadow-hover: 0 6px 18px rgba(10, 24, 38, 0.20);
+                --space-xxs: 4px;
+                --space-xs: 8px;
+                --space-sm: 12px;
+                --space-md: 16px;
+                --space-lg: 24px;
+                --space-xl: 32px;
+                --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+                --fs-hero: 28px; --lh-hero: 36px; --fw-hero: 700;
+                --fs-section: 20px; --lh-section: 28px; --fw-section: 600;
+                --fs-body: 14px; --lh-body: 22px;
+                --fs-label: 12px; --lh-label: 18px; --ls-label: 0.02em;
+                --fs-value: 24px; --lh-value: 32px; --fw-value: 700;
+                --icon-default: #7B8AA0;
+                --icon-active: #2CC3F6;
             }
 
-            body, .stApp {
-                font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-                background-color: var(--cl-hero-start);
-                color: var(--cl-body);
+            body,
+            .stApp {
+                font-family: var(--font-sans);
+                background-color: var(--color-bg-app);
+                color: var(--color-text-body);
             }
 
             .stApp {
@@ -107,57 +119,53 @@ def _inject_dashboard_styles() -> None:
 
             .cl-dashboard-wrapper {
                 width: 100%;
-                padding: 32px 0;
-                background: linear-gradient(90deg, #0D1B2A 0%, #0D1B2A 45%, #162A3A 100%);
+                padding: var(--space-xl) 0;
+                background: linear-gradient(90deg, var(--color-bg-hero-left) 0%, var(--color-bg-hero-left) 45%, var(--color-bg-hero-right) 100%);
             }
 
             .cl-app-shell {
                 margin: 0 auto;
                 max-width: 1400px;
                 display: flex;
-                gap: 32px;
-                padding: 0 24px;
+                gap: var(--space-xl);
+                padding: 0 var(--space-lg);
             }
 
             .cl-sidebar {
                 width: 240px;
-                background: var(--cl-sidebar-bg);
-                border-radius: var(--cl-radius-card);
-                padding: 24px 16px;
+                background: var(--color-bg-sidebar);
+                border-radius: var(--radius-card);
+                padding: var(--space-lg) calc(var(--space-md));
                 flex-shrink: 0;
                 display: flex;
                 flex-direction: column;
-                gap: 24px;
+                gap: var(--space-lg);
                 min-height: 100%;
-                box-shadow: var(--cl-shadow);
+                box-shadow: var(--shadow-card);
             }
 
             .cl-brand-block {
                 display: flex;
                 align-items: center;
-                gap: 12px;
-                color: var(--cl-primary);
+                gap: var(--space-sm);
+                color: var(--color-brand);
                 font-weight: 700;
                 font-size: 18px;
                 letter-spacing: 0.01em;
             }
 
-            .cl-brand-block span {
-                color: var(--cl-primary);
-            }
-
             .cl-nav-section {
                 display: flex;
                 flex-direction: column;
-                gap: 8px;
+                gap: var(--space-xs);
             }
 
             .cl-nav-item {
                 width: 100%;
                 display: flex;
                 align-items: center;
-                gap: 12px;
-                padding: 10px 12px 10px 16px;
+                gap: var(--space-sm);
+                padding: var(--space-sm) calc(var(--space-sm)) var(--space-sm) calc(var(--space-md));
                 color: #E6EDF5;
                 background: transparent;
                 border: none;
@@ -171,27 +179,27 @@ def _inject_dashboard_styles() -> None:
             }
 
             .cl-nav-item svg {
-                stroke: var(--cl-icon-default);
+                stroke: var(--icon-default);
             }
 
             .cl-nav-item:hover {
                 background: rgba(255, 255, 255, 0.06);
-                color: #ffffff;
+                color: var(--color-text-inverse);
             }
 
             .cl-nav-item:focus-visible {
-                outline: 2px solid var(--cl-primary);
+                outline: 2px solid var(--color-brand);
                 outline-offset: 2px;
             }
 
             .cl-nav-item.is-active {
                 background: rgba(44, 195, 246, 0.08);
-                border-left-color: var(--cl-primary);
-                color: #ffffff;
+                border-left-color: var(--color-brand);
+                color: var(--color-text-inverse);
             }
 
             .cl-nav-item.is-active svg {
-                stroke: var(--cl-icon-active);
+                stroke: var(--icon-active);
             }
 
             .cl-main-area {
@@ -201,126 +209,126 @@ def _inject_dashboard_styles() -> None:
                 margin: 0 auto;
                 display: flex;
                 flex-direction: column;
-                gap: 32px;
-                padding-bottom: 32px;
+                gap: var(--space-xl);
+                padding-bottom: var(--space-xl);
             }
 
             .cl-hero {
                 position: relative;
-                background: linear-gradient(90deg, var(--cl-hero-start), var(--cl-hero-end));
-                border-radius: 12px;
-                padding: 24px 32px;
+                background: linear-gradient(90deg, var(--color-bg-hero-left), var(--color-bg-hero-right));
+                border-radius: var(--radius-card);
+                padding: var(--space-lg) var(--space-xl);
                 min-height: 140px;
                 overflow: hidden;
-                color: #ffffff;
-                box-shadow: var(--cl-shadow);
+                color: var(--color-text-inverse);
+                box-shadow: var(--shadow-card);
             }
 
             .cl-hero-brand {
                 display: inline-flex;
                 align-items: center;
-                gap: 8px;
-                color: var(--cl-primary);
+                gap: var(--space-xs);
+                color: var(--color-brand);
                 font-size: 13px;
                 letter-spacing: 0.04em;
                 text-transform: uppercase;
             }
 
             .cl-hero-title {
-                font-size: 28px;
-                line-height: 36px;
-                font-weight: 700;
-                margin: 8px 0 4px;
-                color: #ffffff;
+                font-size: var(--fs-hero);
+                line-height: var(--lh-hero);
+                font-weight: var(--fw-hero);
+                margin: var(--space-xs) 0 var(--space-xxs);
+                color: var(--color-text-inverse);
             }
 
             .cl-hero-subtitle {
-                font-size: 14px;
-                line-height: 22px;
-                color: var(--cl-muted);
+                font-size: var(--fs-body);
+                line-height: var(--lh-body);
+                color: var(--color-text-muted);
                 max-width: 460px;
             }
 
             .cl-hero-watermark {
                 position: absolute;
-                right: 16px;
+                right: var(--space-md);
                 bottom: -10px;
                 opacity: 0.1;
             }
 
             .cl-section {
-                background: var(--cl-card-surface);
-                border-radius: var(--cl-radius-card);
-                padding: 24px;
-                box-shadow: var(--cl-shadow);
-                border: 1px solid var(--cl-card-border);
+                background: var(--color-bg-card);
+                border-radius: var(--radius-card);
+                padding: var(--space-lg);
+                box-shadow: var(--shadow-card);
+                border: 1px solid var(--color-border-card);
             }
 
             .cl-section h2 {
-                font-size: 20px;
-                line-height: 28px;
-                font-weight: 600;
-                color: var(--cl-title);
-                margin: 0 0 20px;
+                font-size: var(--fs-section);
+                line-height: var(--lh-section);
+                font-weight: var(--fw-section);
+                color: var(--color-text-strong);
+                margin: 0 0 var(--space-md);
             }
 
             .cl-metric-grid {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                gap: var(--cl-gap-desktop);
+                gap: var(--space-lg);
             }
 
             .cl-metric-card {
-                background: var(--cl-card-inner);
-                border: 1px solid var(--cl-card-border);
-                border-radius: var(--cl-radius-card);
-                padding: 16px;
-                box-shadow: var(--cl-shadow);
+                background: var(--color-bg-white);
+                border: 1px solid var(--color-border-card);
+                border-radius: var(--radius-card);
+                padding: var(--space-md);
+                box-shadow: var(--shadow-card);
                 transition: transform 150ms ease-out, box-shadow 150ms ease-out;
             }
 
             .cl-metric-card:hover {
-                box-shadow: var(--cl-shadow-hover);
+                box-shadow: var(--shadow-hover);
                 transform: translateY(-1px);
             }
 
             .cl-metric-card:focus-visible {
-                outline: 2px solid var(--cl-primary);
+                outline: 2px solid var(--color-brand);
                 outline-offset: 2px;
             }
 
             .cl-metric-label {
-                font-size: 12px;
-                line-height: 18px;
-                color: var(--cl-muted);
+                font-size: var(--fs-label);
+                line-height: var(--lh-label);
+                color: var(--color-text-muted);
                 text-transform: uppercase;
-                letter-spacing: 0.02em;
-                margin-bottom: 8px;
+                letter-spacing: var(--ls-label);
+                margin-bottom: var(--space-xs);
             }
 
             .cl-metric-value {
-                font-size: 24px;
-                line-height: 32px;
-                font-weight: 700;
-                color: var(--cl-title);
+                font-size: var(--fs-value);
+                line-height: var(--lh-value);
+                font-weight: var(--fw-value);
+                color: var(--color-text-strong);
                 text-align: right;
             }
 
             .cl-metric-card.is-positive .cl-metric-value {
-                color: var(--cl-positive);
+                color: var(--color-positive);
             }
 
             .cl-metric-card.is-warning .cl-metric-value {
-                color: var(--cl-warning);
+                color: var(--color-warning);
             }
 
             .cl-chart-panel {
-                margin-top: 24px;
-                background: var(--cl-card-inner);
-                border: 1px solid var(--cl-card-border);
-                border-radius: var(--cl-radius-card);
-                padding: 24px;
-                box-shadow: var(--cl-shadow);
+                margin-top: var(--space-lg);
+                background: var(--color-bg-white);
+                border: 1px solid var(--color-border-card);
+                border-radius: var(--radius-card);
+                padding: var(--space-lg);
+                box-shadow: var(--shadow-card);
                 min-height: 360px;
                 display: flex;
                 align-items: center;
@@ -330,29 +338,25 @@ def _inject_dashboard_styles() -> None:
             .cl-chart-panel .cl-chart-placeholder {
                 width: 100%;
                 height: 100%;
-                border: 2px dashed var(--cl-divider);
-                border-radius: calc(var(--cl-radius-card) - 8px);
+                border: 2px dashed var(--color-line-muted);
+                border-radius: calc(var(--radius-card) - var(--space-sm));
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                color: var(--cl-muted);
+                color: var(--color-text-muted);
                 font-weight: 500;
                 text-align: center;
             }
 
-            .cl-chart-panel .cl-chart-placeholder span {
-                display: block;
-            }
-
             .cl-chart-panel .cl-chart-placeholder:focus-visible {
-                outline: 2px solid var(--cl-primary);
+                outline: 2px solid var(--color-brand);
                 outline-offset: 6px;
             }
 
             @media (max-width: 1199px) {
                 .cl-app-shell {
-                    padding: 0 20px;
-                    gap: 24px;
+                    padding: 0 var(--space-md);
+                    gap: var(--space-lg);
                 }
 
                 .cl-sidebar {
@@ -360,21 +364,21 @@ def _inject_dashboard_styles() -> None:
                 }
 
                 .cl-metric-grid {
-                    gap: var(--cl-gap-tablet);
+                    gap: var(--space-md);
                     grid-template-columns: repeat(2, minmax(200px, 1fr));
                 }
             }
 
             @media (max-width: 767px) {
                 .cl-app-shell {
-                    padding: 0 16px;
+                    padding: 0 var(--space-md);
                 }
 
                 .cl-sidebar {
                     width: 64px;
-                    padding: 16px 8px;
+                    padding: var(--space-md) var(--space-sm);
                     align-items: center;
-                    gap: 16px;
+                    gap: var(--space-md);
                 }
 
                 .cl-brand-block {
@@ -382,13 +386,13 @@ def _inject_dashboard_styles() -> None:
                 }
 
                 .cl-nav-section {
-                    gap: 12px;
+                    gap: var(--space-sm);
                 }
 
                 .cl-nav-item {
                     border-left: none;
-                    border-radius: 12px;
-                    padding: 12px;
+                    border-radius: var(--radius-card);
+                    padding: var(--space-md);
                     justify-content: center;
                 }
 
@@ -398,7 +402,7 @@ def _inject_dashboard_styles() -> None:
 
                 .cl-hero {
                     min-height: 110px;
-                    padding: 20px;
+                    padding: var(--space-lg);
                 }
 
                 .cl-hero-title {
@@ -412,7 +416,7 @@ def _inject_dashboard_styles() -> None:
 
                 .cl-metric-grid {
                     grid-template-columns: 1fr;
-                    gap: var(--cl-gap-mobile);
+                    gap: var(--space-sm);
                 }
             }
         </style>
@@ -438,11 +442,12 @@ def _render_sidebar_nav(active_item: str) -> str:
         state_class = " is-active" if is_active else ""
         aria_current = "page" if is_active else "false"
         icon_color = "var(--cl-icon-active)" if is_active else None
+        icon_stroke = icon_color or "var(--icon-default)"
         buttons.append(
             f"""
             <button type="button" class="cl-nav-item{state_class}" aria-label="{item['label']}"
                     aria-current="{aria_current}" title="{item['label']}">
-                {_icon_svg(item['icon'], stroke=icon_color or "var(--cl-icon-default)")}
+                {_icon_svg(item['icon'], stroke=icon_stroke)}
                 <span class="cl-nav-label">{item['label']}</span>
             </button>
             """
@@ -451,7 +456,7 @@ def _render_sidebar_nav(active_item: str) -> str:
     return f"""
     <aside class="cl-sidebar" role="navigation" aria-label="Primary navigation">
         <div class="cl-brand-block">
-            {_icon_svg("eye", stroke="var(--cl-primary)")}
+            {_icon_svg("eye", stroke="var(--color-brand)")}
             <span>CareerLens</span>
         </div>
         <div class="cl-nav-section">
@@ -468,14 +473,14 @@ def _render_hero_header(user_name: str, subtitle: str) -> str:
     <header class="cl-hero" role="banner">
         <div class="cl-hero-content">
             <div class="cl-hero-brand">
-                {_icon_svg("eye", stroke="var(--cl-primary)", size=18)}
+                {_icon_svg("eye", stroke="var(--color-brand)", size=18)}
                 <span>CareerLens</span>
             </div>
             <h1 class="cl-hero-title">{greeting}</h1>
             <p class="cl-hero-subtitle">{subtitle}</p>
         </div>
         <div class="cl-hero-watermark" aria-hidden="true">
-            {_icon_svg("eye", stroke="var(--cl-primary)", size=220, opacity=0.1)}
+            {_icon_svg("eye", stroke="var(--color-brand)", size=220, opacity=0.1)}
         </div>
     </header>
     """
@@ -638,40 +643,20 @@ def display_market_positioning_profile(matched_jobs, user_profile):
     """Display Dashboard with 3 key metric cards: Match Score, Est. Salary, Skill Gaps"""
     if not matched_jobs:
         return
-    
+
+    _inject_dashboard_styles()
+
     avg_match_score = sum(r.get('combined_match_score', 0) for r in matched_jobs) / len(matched_jobs)
     match_score_pct = int(avg_match_score * 100)
-    
-    if match_score_pct >= 80:
-        match_delta = "Excellent fit"
-        match_delta_color = "normal"
-    elif match_score_pct >= 60:
-        match_delta = "Good fit"
-        match_delta_color = "off"
-    else:
-        match_delta = "Room to improve"
-        match_delta_color = "inverse"
-    
+
     salary_min, salary_max = calculate_salary_band(matched_jobs)
     avg_salary = (salary_min + salary_max) // 2
-    
-    user_salary_expectation = st.session_state.get('salary_expectation', 0)
-    if user_salary_expectation > 0:
-        salary_delta_pct = ((avg_salary - user_salary_expectation) / user_salary_expectation * 100) if user_salary_expectation > 0 else 0
-        if salary_delta_pct > 0:
-            salary_delta = f"+{salary_delta_pct:.0f}% vs target"
-        elif salary_delta_pct < 0:
-            salary_delta = f"{salary_delta_pct:.0f}% vs target"
-        else:
-            salary_delta = "Matches target"
-    else:
-        salary_delta = "Market rate"
-    
+
     user_skills = user_profile.get('skills', '')
     all_job_skills = []
     for result in matched_jobs:
         all_job_skills.extend(result['job'].get('skills', []))
-    
+
     user_skills_list = [s.lower().strip() for s in str(user_skills).split(',') if s.strip()]
     skill_gaps = set()
     for job_skill in all_job_skills:
@@ -679,49 +664,35 @@ def display_market_positioning_profile(matched_jobs, user_profile):
             job_skill_lower = job_skill.lower().strip()
             if job_skill_lower and not any(us in job_skill_lower or job_skill_lower in us for us in user_skills_list):
                 skill_gaps.add(job_skill_lower)
-    
+
     num_skill_gaps = len(skill_gaps)
-    
-    if num_skill_gaps <= 3:
-        gap_delta = "Well positioned"
-        gap_delta_color = "normal"
-    elif num_skill_gaps <= 7:
-        gap_delta = "Some upskilling needed"
-        gap_delta_color = "off"
-    else:
-        gap_delta = "Focus on learning"
-        gap_delta_color = "inverse"
-    
-    st.markdown("### 📊 Your Dashboard")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown(f"""
-        <div class="dashboard-metric-card">
-            <div class="dashboard-metric-label">Match Score</div>
-            <div class="dashboard-metric-value">{match_score_pct}%</div>
+
+    metric_cards = [
+        _render_metric_card("MATCH SCORE", f"{match_score_pct}%", variant="positive"),
+        _render_metric_card("EST SALARY", f"HK${max(avg_salary // 1000, 0)}k"),
+        _render_metric_card("SKILL GAPS", str(num_skill_gaps), variant="warning"),
+    ]
+
+    metrics_html = f'<div class="cl-metric-grid">{"".join(metric_cards)}</div>'
+    chart_html = _render_chart_panel()
+    section_html = _render_section("Recent Activity", metrics_html + chart_html)
+
+    hero_name = user_profile.get('name') or user_profile.get('first_name') or "Alex"
+    hero_subtitle = "Your market value has increased by 5% since last month."
+
+    layout_html = f"""
+    <div class="cl-dashboard-wrapper">
+        <div class="cl-app-shell">
+            {_render_sidebar_nav("Dashboard")}
+            <main class="cl-main-area" role="main" aria-live="polite">
+                {_render_hero_header(hero_name, hero_subtitle)}
+                {section_html}
+            </main>
         </div>
-        """, unsafe_allow_html=True)
-        st.caption(f"📈 {match_delta}")
-    
-    with col2:
-        st.markdown(f"""
-        <div class="dashboard-metric-card">
-            <div class="dashboard-metric-label">Est. Salary</div>
-            <div class="dashboard-metric-value">HKD {avg_salary // 1000}k</div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.caption(f"💰 {salary_delta}")
-    
-    with col3:
-        st.markdown(f"""
-        <div class="dashboard-metric-card">
-            <div class="dashboard-metric-label">Skill Gaps</div>
-            <div class="dashboard-metric-value">{num_skill_gaps}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.caption(f"🎯 {gap_delta}")
+    </div>
+    """
+
+    st.markdown(layout_html, unsafe_allow_html=True)
 
 
 def display_refine_results_section(matched_jobs, user_profile):
