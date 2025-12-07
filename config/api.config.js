@@ -9,6 +9,7 @@
 
 const config = {
   // API Base URL
+  // Note: process.env.REACT_APP_* variables are defined in vite.config.js via 'define'
   apiUrl: process.env.REACT_APP_API_URL || 'http://localhost:8000/api',
   
   // Use Mock API (for development without backend)
