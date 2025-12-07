@@ -384,6 +384,40 @@ def render_styles():
             initReconnectionHandlers();
         }
     })();
+    
+    // Remove any accidentally rendered JavaScript code snippets
+    (function() {
+        function removeRenderedCode() {
+            const walker = document.createTreeWalker(
+                document.body,
+                NodeFilter.SHOW_TEXT,
+                null,
+                false
+            );
+            let node;
+            const nodesToRemove = [];
+            while (node = walker.nextNode()) {
+                if (node.textContent && node.textContent.trim() === '})();') {
+                    const parent = node.parentElement;
+                    if (parent && !parent.closest('script')) {
+                        nodesToRemove.push(node);
+                    }
+                }
+            }
+            nodesToRemove.forEach(n => {
+                if (n.parentElement) {
+                    n.parentElement.removeChild(n);
+                }
+            });
+        }
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', removeRenderedCode);
+        } else {
+            removeRenderedCode();
+        }
+        // Also run after a short delay to catch dynamically added content
+        setTimeout(removeRenderedCode, 100);
+    })();
     </script>
     """, unsafe_allow_html=True)
 
