@@ -280,143 +280,143 @@ def render_styles():
         </div>
     </div>
     <script>
-    (function() {{
-        function updateTheme() {{
+    (function() {
+        function updateTheme() {
             const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            if (prefersDark) {{
+            if (prefersDark) {
                 document.documentElement.setAttribute('data-theme', 'dark');
                 const stApp = document.querySelector('.stApp') || document.querySelector('[data-testid="stApp"]');
-                if (stApp) {{
+                if (stApp) {
                     stApp.setAttribute('data-theme', 'dark');
-                }}
+                }
                 document.body.setAttribute('data-theme', 'dark');
-            }} else {{
+            } else {
                 document.documentElement.removeAttribute('data-theme');
                 const stApp = document.querySelector('.stApp') || document.querySelector('[data-testid="stApp"]');
-                if (stApp) {{
+                if (stApp) {
                     stApp.removeAttribute('data-theme');
-                }}
+                }
                 document.body.removeAttribute('data-theme');
-            }}
-        }}
+            }
+        }
         
-        if (document.readyState === 'loading') {{
+        if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', updateTheme);
-        }} else {{
+        } else {
             updateTheme();
-        }}
+        }
         
         const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-        if (mediaQuery.addEventListener) {{
+        if (mediaQuery.addEventListener) {
             mediaQuery.addEventListener('change', updateTheme);
-        }} else {{
+        } else {
             mediaQuery.addListener(updateTheme);
-        }}
-    }})();
+        }
+    })();
     
-    (function() {{
+    (function() {
         const overlay = document.getElementById('ws-reconnecting-overlay');
         let isReconnecting = false;
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
         let reconnectTimer = null;
         
-        function showReconnectingOverlay() {{
-            if (overlay && !isReconnecting) {{
+        function showReconnectingOverlay() {
+            if (overlay && !isReconnecting) {
                 isReconnecting = true;
                 overlay.classList.add('active');
-            }}
-        }}
+            }
+        }
         
-        function hideReconnectingOverlay() {{
-            if (overlay) {{
+        function hideReconnectingOverlay() {
+            if (overlay) {
                 isReconnecting = false;
                 reconnectAttempts = 0;
                 overlay.classList.remove('active');
-            }}
-        }}
+            }
+        }
         
-        function attemptReconnect() {{
-            if (reconnectAttempts >= maxReconnectAttempts) {{
+        function attemptReconnect() {
+            if (reconnectAttempts >= maxReconnectAttempts) {
                 window.location.reload();
                 return;
-            }}
+            }
             
             reconnectAttempts++;
             const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 16000);
             
-            reconnectTimer = setTimeout(function() {{
-                if (navigator.onLine) {{
-                    try {{
+            reconnectTimer = setTimeout(function() {
+                if (navigator.onLine) {
+                    try {
                         const stApp = window.parent.document || document;
                         const rerunButton = stApp.querySelector('[data-testid="stRerunButton"]');
-                        if (rerunButton) {{
+                        if (rerunButton) {
                             rerunButton.click();
                             hideReconnectingOverlay();
                             return;
-                        }}
-                    }} catch (e) {{
+                        }
+                    } catch (e) {
                         console.log('CareerLens: Could not trigger Streamlit rerun');
-                    }}
+                    }
                     
-                    if (reconnectAttempts >= 3) {{
+                    if (reconnectAttempts >= 3) {
                         window.location.reload();
-                    }} else {{
+                    } else {
                         attemptReconnect();
-                    }}
-                }} else {{
+                    }
+                } else {
                     attemptReconnect();
-                }}
-            }}, delay);
-        }}
+                }
+            }, delay);
+        }
         
-        window.addEventListener('offline', function() {{
+        window.addEventListener('offline', function() {
             showReconnectingOverlay();
-        }});
+        });
         
-        window.addEventListener('online', function() {{
-            setTimeout(function() {{
+        window.addEventListener('online', function() {
+            setTimeout(function() {
                 hideReconnectingOverlay();
                 window.location.reload();
-            }}, 1000);
-        }});
+            }, 1000);
+        });
         
         const OriginalWebSocket = window.WebSocket;
-        window.WebSocket = function(url, protocols) {{
+        window.WebSocket = function(url, protocols) {
             const ws = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
             
-            if (url && (url.includes('_stcore/stream') || url.includes('logstream'))) {{
-                ws.addEventListener('close', function(event) {{
-                    if (event.code !== 1000 && event.code !== 1001) {{
+            if (url && (url.includes('_stcore/stream') || url.includes('logstream'))) {
+                ws.addEventListener('close', function(event) {
+                    if (event.code !== 1000 && event.code !== 1001) {
                         showReconnectingOverlay();
                         attemptReconnect();
-                    }}
-                }});
+                    }
+                });
                 
-                ws.addEventListener('error', function(event) {{
+                ws.addEventListener('error', function(event) {
                     showReconnectingOverlay();
                     attemptReconnect();
-                }});
+                });
                 
-                ws.addEventListener('open', function() {{
+                ws.addEventListener('open', function() {
                     hideReconnectingOverlay();
-                }});
-            }}
+                });
+            }
             
             return ws;
-        }};
+        };
         window.WebSocket.prototype = OriginalWebSocket.prototype;
         window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
         window.WebSocket.OPEN = OriginalWebSocket.OPEN;
         window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
         window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
         
-        window.addEventListener('beforeunload', function() {{
-            if (reconnectTimer) {{
+        window.addEventListener('beforeunload', function() {
+            if (reconnectTimer) {
                 clearTimeout(reconnectTimer);
-            }}
-        }});
-    }})();
+            }
+        });
+    })();
     </script>
     """, unsafe_allow_html=True)
 
