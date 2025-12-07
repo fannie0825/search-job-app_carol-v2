@@ -1,23 +1,41 @@
-# Core dependencies with pinned versions for Streamlit Cloud stability
+# =============================================================================
+# CareerLens - Python Dependencies for Streamlit Cloud
+# =============================================================================
+# Optimized for Streamlit Cloud memory limits (~1GB)
+# All libraries listed are actively used in the codebase
+
+# -----------------------------------------------------------------------------
+# Core Framework & Web
+# -----------------------------------------------------------------------------
 streamlit>=1.28.0,<2.0.0
 requests>=2.31.0,<3.0.0
+
+# -----------------------------------------------------------------------------
+# Data Processing & ML
+# -----------------------------------------------------------------------------
 numpy>=1.24.0,<2.0.0
 pandas>=2.0.0,<3.0.0
-scikit-learn>=1.3.0,<2.0.0
+scikit-learn>=1.3.0,<2.0.0      # Used for cosine_similarity only
 
-# Document processing
-PyPDF2>=3.0.0,<4.0.0
-python-docx>=1.0.0,<2.0.0
+# -----------------------------------------------------------------------------
+# Document Processing (Resume Upload)
+# -----------------------------------------------------------------------------
+PyPDF2>=3.0.0,<4.0.0            # PDF text extraction
+python-docx>=1.0.0,<2.0.0       # DOCX text extraction & generation
 
-# Vector store - use lightweight version for Streamlit Cloud
-# Note: chromadb can be memory-intensive; using specific version for stability
+# -----------------------------------------------------------------------------
+# Vector Store (Semantic Search)
+# -----------------------------------------------------------------------------
+# Note: chromadb is memory-intensive; version pinned for stability
+# Uses in-memory SQLite for Streamlit Cloud compatibility
 chromadb>=0.4.0,<0.5.0
 
-# Tokenization
-tiktoken>=0.5.0,<1.0.0
+# -----------------------------------------------------------------------------
+# AI/API Utilities
+# -----------------------------------------------------------------------------
+tiktoken>=0.5.0,<1.0.0          # Token counting for API rate limiting
 
-# PDF generation
-reportlab>=4.0.0,<5.0.0
-
-# Protobuf version constraint (needed for some ML dependencies)
-protobuf>=4.0.0,<5.0.0
+# -----------------------------------------------------------------------------
+# PDF Generation (Resume Export)
+# -----------------------------------------------------------------------------
+reportlab>=4.0.0,<5.0.0         # Professional PDF resume generation
