@@ -1,4 +1,6 @@
 """Dashboard display components"""
+from typing import Optional
+
 import streamlit as st
 import pandas as pd
 import gc
@@ -6,6 +8,509 @@ from modules.analysis import calculate_salary_band, filter_jobs_by_domains, filt
 from modules.semantic_search import SemanticJobSearch, fetch_jobs_with_cache, generate_and_store_resume_embedding
 from modules.utils import get_embedding_generator, get_job_scraper, get_text_generator
 from modules.utils.config import _determine_index_limit
+
+# ---------------------------------------------------------------------------
+# Design system helpers for the refreshed CareerLens dashboard experience
+# ---------------------------------------------------------------------------
+
+_DASHBOARD_STYLE_KEY = "_careerlens_dashboard_v2_styles"
+
+_ICON_PATHS = {
+    "eye": """
+        <path d="M1 12s4-8 11-8 11 8-4 8-11 8-11-8-11-8Z"></path>
+        <circle cx="12" cy="12" r="3"></circle>
+    """,
+    "layout-grid": """
+        <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+        <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+        <rect x="14" y="14" width="7" height="7" rx="1"></rect>
+        <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+    """,
+    "file-text": """
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path>
+        <path d="M14 2v6h6"></path>
+        <path d="M16 13H8"></path>
+        <path d="M16 17H8"></path>
+    """,
+    "target": """
+        <circle cx="12" cy="12" r="10"></circle>
+        <circle cx="12" cy="12" r="6"></circle>
+        <circle cx="12" cy="12" r="2"></circle>
+    """,
+    "settings": """
+        <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"></path>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V11a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"></path>
+    """,
+}
+
+
+def _icon_svg(name: str, *, size: int = 20, stroke: Optional[str] = None, opacity: float = 1.0) -> str:
+    """Return an inline SVG icon that matches the requested brand specs."""
+    path = _ICON_PATHS.get(name, "")
+    stroke_color = stroke or "var(--cl-icon-default)"
+    return (
+        f'<svg aria-hidden="true" width="{size}" height="{size}" viewBox="0 0 24 24" '
+        f'fill="none" stroke="{stroke_color}" stroke-width="1.75" stroke-linecap="round" '
+        f'stroke-linejoin="round" style="opacity:{opacity}; flex-shrink:0;">{path}</svg>'
+    )
+
+
+def _inject_dashboard_styles() -> None:
+    """Inject the CareerLens v2 dashboard design tokens + layout styles once."""
+    if st.session_state.get(_DASHBOARD_STYLE_KEY):
+        return
+
+    st.markdown(
+        """
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+            :root {
+                --cl-primary: #2CC3F6;
+                --cl-primary-hover: #22ACE0;
+                --cl-secondary: #7B8AA0;
+                --cl-sidebar-bg: #0A1725;
+                --cl-hero-start: #0D1B2A;
+                --cl-hero-end: #162A3A;
+                --cl-card-surface: #F5F7FB;
+                --cl-card-inner: #FFFFFF;
+                --cl-card-border: #E3E8F2;
+                --cl-title: #1B2A41;
+                --cl-body: #2A3B52;
+                --cl-muted: #7B8AA0;
+                --cl-positive: #2CC3F6;
+                --cl-warning: #F85F73;
+                --cl-success: #3CCB7C;
+                --cl-info: #5C7CFA;
+                --cl-divider: #D8DEE9;
+                --cl-shadow: 0 4px 12px rgba(10, 24, 38, 0.15);
+                --cl-shadow-hover: 0 6px 18px rgba(10, 24, 38, 0.20);
+                --cl-radius-card: 12px;
+                --cl-radius-input: 8px;
+                --cl-radius-badge: 6px;
+                --cl-gap-desktop: 24px;
+                --cl-gap-tablet: 16px;
+                --cl-gap-mobile: 12px;
+                --cl-icon-default: #7B8AA0;
+                --cl-icon-active: #2CC3F6;
+            }
+
+            body, .stApp {
+                font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+                background-color: var(--cl-hero-start);
+                color: var(--cl-body);
+            }
+
+            .stApp {
+                padding: 0;
+            }
+
+            .cl-dashboard-wrapper {
+                width: 100%;
+                padding: 32px 0;
+                background: linear-gradient(90deg, #0D1B2A 0%, #0D1B2A 45%, #162A3A 100%);
+            }
+
+            .cl-app-shell {
+                margin: 0 auto;
+                max-width: 1400px;
+                display: flex;
+                gap: 32px;
+                padding: 0 24px;
+            }
+
+            .cl-sidebar {
+                width: 240px;
+                background: var(--cl-sidebar-bg);
+                border-radius: var(--cl-radius-card);
+                padding: 24px 16px;
+                flex-shrink: 0;
+                display: flex;
+                flex-direction: column;
+                gap: 24px;
+                min-height: 100%;
+                box-shadow: var(--cl-shadow);
+            }
+
+            .cl-brand-block {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                color: var(--cl-primary);
+                font-weight: 700;
+                font-size: 18px;
+                letter-spacing: 0.01em;
+            }
+
+            .cl-brand-block span {
+                color: var(--cl-primary);
+            }
+
+            .cl-nav-section {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .cl-nav-item {
+                width: 100%;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                padding: 10px 12px 10px 16px;
+                color: #E6EDF5;
+                background: transparent;
+                border: none;
+                border-left: 4px solid transparent;
+                border-radius: 8px;
+                font-size: 14px;
+                line-height: 20px;
+                text-align: left;
+                transition: background 150ms ease-out, color 150ms ease-out, border-color 150ms ease-out, transform 150ms ease-out;
+                cursor: pointer;
+            }
+
+            .cl-nav-item svg {
+                stroke: var(--cl-icon-default);
+            }
+
+            .cl-nav-item:hover {
+                background: rgba(255, 255, 255, 0.06);
+                color: #ffffff;
+            }
+
+            .cl-nav-item:focus-visible {
+                outline: 2px solid var(--cl-primary);
+                outline-offset: 2px;
+            }
+
+            .cl-nav-item.is-active {
+                background: rgba(44, 195, 246, 0.08);
+                border-left-color: var(--cl-primary);
+                color: #ffffff;
+            }
+
+            .cl-nav-item.is-active svg {
+                stroke: var(--cl-icon-active);
+            }
+
+            .cl-main-area {
+                flex: 1;
+                max-width: 1200px;
+                width: 100%;
+                margin: 0 auto;
+                display: flex;
+                flex-direction: column;
+                gap: 32px;
+                padding-bottom: 32px;
+            }
+
+            .cl-hero {
+                position: relative;
+                background: linear-gradient(90deg, var(--cl-hero-start), var(--cl-hero-end));
+                border-radius: 12px;
+                padding: 24px 32px;
+                min-height: 140px;
+                overflow: hidden;
+                color: #ffffff;
+                box-shadow: var(--cl-shadow);
+            }
+
+            .cl-hero-brand {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                color: var(--cl-primary);
+                font-size: 13px;
+                letter-spacing: 0.04em;
+                text-transform: uppercase;
+            }
+
+            .cl-hero-title {
+                font-size: 28px;
+                line-height: 36px;
+                font-weight: 700;
+                margin: 8px 0 4px;
+                color: #ffffff;
+            }
+
+            .cl-hero-subtitle {
+                font-size: 14px;
+                line-height: 22px;
+                color: var(--cl-muted);
+                max-width: 460px;
+            }
+
+            .cl-hero-watermark {
+                position: absolute;
+                right: 16px;
+                bottom: -10px;
+                opacity: 0.1;
+            }
+
+            .cl-section {
+                background: var(--cl-card-surface);
+                border-radius: var(--cl-radius-card);
+                padding: 24px;
+                box-shadow: var(--cl-shadow);
+                border: 1px solid var(--cl-card-border);
+            }
+
+            .cl-section h2 {
+                font-size: 20px;
+                line-height: 28px;
+                font-weight: 600;
+                color: var(--cl-title);
+                margin: 0 0 20px;
+            }
+
+            .cl-metric-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: var(--cl-gap-desktop);
+            }
+
+            .cl-metric-card {
+                background: var(--cl-card-inner);
+                border: 1px solid var(--cl-card-border);
+                border-radius: var(--cl-radius-card);
+                padding: 16px;
+                box-shadow: var(--cl-shadow);
+                transition: transform 150ms ease-out, box-shadow 150ms ease-out;
+            }
+
+            .cl-metric-card:hover {
+                box-shadow: var(--cl-shadow-hover);
+                transform: translateY(-1px);
+            }
+
+            .cl-metric-card:focus-visible {
+                outline: 2px solid var(--cl-primary);
+                outline-offset: 2px;
+            }
+
+            .cl-metric-label {
+                font-size: 12px;
+                line-height: 18px;
+                color: var(--cl-muted);
+                text-transform: uppercase;
+                letter-spacing: 0.02em;
+                margin-bottom: 8px;
+            }
+
+            .cl-metric-value {
+                font-size: 24px;
+                line-height: 32px;
+                font-weight: 700;
+                color: var(--cl-title);
+                text-align: right;
+            }
+
+            .cl-metric-card.is-positive .cl-metric-value {
+                color: var(--cl-positive);
+            }
+
+            .cl-metric-card.is-warning .cl-metric-value {
+                color: var(--cl-warning);
+            }
+
+            .cl-chart-panel {
+                margin-top: 24px;
+                background: var(--cl-card-inner);
+                border: 1px solid var(--cl-card-border);
+                border-radius: var(--cl-radius-card);
+                padding: 24px;
+                box-shadow: var(--cl-shadow);
+                min-height: 360px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .cl-chart-panel .cl-chart-placeholder {
+                width: 100%;
+                height: 100%;
+                border: 2px dashed var(--cl-divider);
+                border-radius: calc(var(--cl-radius-card) - 8px);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: var(--cl-muted);
+                font-weight: 500;
+                text-align: center;
+            }
+
+            .cl-chart-panel .cl-chart-placeholder span {
+                display: block;
+            }
+
+            .cl-chart-panel .cl-chart-placeholder:focus-visible {
+                outline: 2px solid var(--cl-primary);
+                outline-offset: 6px;
+            }
+
+            @media (max-width: 1199px) {
+                .cl-app-shell {
+                    padding: 0 20px;
+                    gap: 24px;
+                }
+
+                .cl-sidebar {
+                    width: 220px;
+                }
+
+                .cl-metric-grid {
+                    gap: var(--cl-gap-tablet);
+                    grid-template-columns: repeat(2, minmax(200px, 1fr));
+                }
+            }
+
+            @media (max-width: 767px) {
+                .cl-app-shell {
+                    padding: 0 16px;
+                }
+
+                .cl-sidebar {
+                    width: 64px;
+                    padding: 16px 8px;
+                    align-items: center;
+                    gap: 16px;
+                }
+
+                .cl-brand-block {
+                    display: none;
+                }
+
+                .cl-nav-section {
+                    gap: 12px;
+                }
+
+                .cl-nav-item {
+                    border-left: none;
+                    border-radius: 12px;
+                    padding: 12px;
+                    justify-content: center;
+                }
+
+                .cl-nav-label {
+                    display: none;
+                }
+
+                .cl-hero {
+                    min-height: 110px;
+                    padding: 20px;
+                }
+
+                .cl-hero-title {
+                    font-size: 24px;
+                    line-height: 32px;
+                }
+
+                .cl-hero-subtitle {
+                    font-size: 13px;
+                }
+
+                .cl-metric-grid {
+                    grid-template-columns: 1fr;
+                    gap: var(--cl-gap-mobile);
+                }
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.session_state[_DASHBOARD_STYLE_KEY] = True
+
+
+def _render_sidebar_nav(active_item: str) -> str:
+    """Build the navigation rail markup."""
+    nav_items = [
+        {"label": "Dashboard", "icon": "layout-grid"},
+        {"label": "Resume Analysis", "icon": "file-text"},
+        {"label": "Market Match", "icon": "target"},
+        {"label": "Settings", "icon": "settings"},
+    ]
+
+    buttons = []
+    for item in nav_items:
+        is_active = item["label"].lower() == active_item.lower()
+        state_class = " is-active" if is_active else ""
+        aria_current = "page" if is_active else "false"
+        icon_color = "var(--cl-icon-active)" if is_active else None
+        buttons.append(
+            f"""
+            <button type="button" class="cl-nav-item{state_class}" aria-label="{item['label']}"
+                    aria-current="{aria_current}" title="{item['label']}">
+                {_icon_svg(item['icon'], stroke=icon_color or "var(--cl-icon-default)")}
+                <span class="cl-nav-label">{item['label']}</span>
+            </button>
+            """
+        )
+
+    return f"""
+    <aside class="cl-sidebar" role="navigation" aria-label="Primary navigation">
+        <div class="cl-brand-block">
+            {_icon_svg("eye", stroke="var(--cl-primary)")}
+            <span>CareerLens</span>
+        </div>
+        <div class="cl-nav-section">
+            {''.join(buttons)}
+        </div>
+    </aside>
+    """
+
+
+def _render_hero_header(user_name: str, subtitle: str) -> str:
+    """Return the hero header layout."""
+    greeting = f"Welcome back, {user_name or 'Alex'}."
+    return f"""
+    <header class="cl-hero" role="banner">
+        <div class="cl-hero-content">
+            <div class="cl-hero-brand">
+                {_icon_svg("eye", stroke="var(--cl-primary)", size=18)}
+                <span>CareerLens</span>
+            </div>
+            <h1 class="cl-hero-title">{greeting}</h1>
+            <p class="cl-hero-subtitle">{subtitle}</p>
+        </div>
+        <div class="cl-hero-watermark" aria-hidden="true">
+            {_icon_svg("eye", stroke="var(--cl-primary)", size=220, opacity=0.1)}
+        </div>
+    </header>
+    """
+
+
+def _render_metric_card(label: str, value: str, variant: str = "default") -> str:
+    """Return HTML for a metric card with variant coloring."""
+    variant_class = "" if variant == "default" else f" is-{variant}"
+    return f"""
+    <article class="cl-metric-card{variant_class}" tabindex="0" aria-label="{label} {value}">
+        <p class="cl-metric-label">{label}</p>
+        <p class="cl-metric-value">{value}</p>
+    </article>
+    """
+
+
+def _render_chart_panel() -> str:
+    """Placeholder chart area with dashed boundary."""
+    return """
+    <div class="cl-chart-panel">
+        <div class="cl-chart-placeholder" tabindex="0">
+            <span>Chart Area / Data Visualization</span>
+        </div>
+    </div>
+    """
+
+
+def _render_section(title: str, content_html: str) -> str:
+    """Generic section wrapper."""
+    return f"""
+    <section class="cl-section" aria-label="{title}">
+        <h2>{title}</h2>
+        {content_html}
+    </section>
+    """
 
 
 def display_skill_matching_matrix(user_profile):
