@@ -1,7 +1,12 @@
 """CSS styles and JavaScript for CareerLens UI"""
-import streamlit as st
-from modules.utils.helpers import get_img_as_base64
+import json
 import os
+import textwrap
+
+import streamlit as st
+import streamlit.components.v1 as components
+
+from modules.utils.helpers import get_img_as_base64
 
 # Load logo for hero banner
 _logo_base64 = ""
@@ -19,6 +24,43 @@ for logo_path in logo_paths:
             break
 else:
     _logo_html = '<div class="hero-bg-logo"></div>'
+
+
+def _inject_global_js(js_code: str, script_id: str) -> None:
+    """Inject a JS snippet into the parent Streamlit document exactly once."""
+    cleaned_js = textwrap.dedent(js_code).strip()
+    if not cleaned_js:
+        return
+
+    # Use a lightweight HTML component to append the script to the parent DOM.
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            let doc = document;
+            try {{
+                if (window.parent && window.parent.document) {{
+                    doc = window.parent.document;
+                }}
+            }} catch (err) {{
+                console.warn('CareerLens: Unable to access parent document for script injection.', err);
+            }}
+
+            if (doc.getElementById('{script_id}')) {{
+                return;
+            }}
+
+            const script = doc.createElement('script');
+            script.id = '{script_id}';
+            script.type = 'text/javascript';
+            script.innerHTML = {json.dumps(cleaned_js)};
+            doc.body.appendChild(script);
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def render_styles():
@@ -283,149 +325,119 @@ def render_styles():
             <div class="ws-reconnecting-subtext">Please wait while we restore your connection</div>
         </div>
     </div>
-    <script>
-    (function() {
-        function updateTheme() {
-            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            if (prefersDark) {
-                document.documentElement.setAttribute('data-theme', 'dark');
-                const stApp = document.querySelector('.stApp') || document.querySelector('[data-testid="stApp"]');
-                if (stApp) {
-                    stApp.setAttribute('data-theme', 'dark');
-                }
-                document.body.setAttribute('data-theme', 'dark');
-            } else {
-                document.documentElement.removeAttribute('data-theme');
-                const stApp = document.querySelector('.stApp') || document.querySelector('[data-testid="stApp"]');
-                if (stApp) {
-                    stApp.removeAttribute('data-theme');
-                }
-                document.body.removeAttribute('data-theme');
-            }
-        }
-        
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', updateTheme);
-        } else {
-            updateTheme();
-        }
-        
-        const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-        if (mediaQuery.addEventListener) {
-            mediaQuery.addEventListener('change', updateTheme);
-        } else {
-            mediaQuery.addListener(updateTheme);
-        }
-    })();
-    
-    (function() {
-        let isReconnecting = false;
-
-        // Helper function to get overlay element (re-query each time to handle Streamlit re-renders)
-        function getOverlay() {
-            return document.getElementById('ws-reconnecting-overlay');
-        }
-
-        function showReconnectingOverlay() {
-            const overlay = getOverlay();
-            if (overlay && !isReconnecting) {
-                isReconnecting = true;
-                overlay.classList.add('active');
-            }
-        }
-
-        function hideReconnectingOverlay() {
-            const overlay = getOverlay();
-            if (overlay) {
-                isReconnecting = false;
-                overlay.classList.remove('active');
-            }
-        }
-
-        // Wait for DOM to be ready before setting up listeners
-        function initReconnectionHandlers() {
-            // Show overlay when offline
-            window.addEventListener('offline', function() {
-                showReconnectingOverlay();
-            });
-
-            // Hide overlay when back online (let Streamlit handle reconnection)
-            window.addEventListener('online', function() {
-                setTimeout(function() {
-                    hideReconnectingOverlay();
-                }, 1000);
-            });
-
-            // Monitor Streamlit's connection state
-            const observer = new MutationObserver(function(mutations) {
-                mutations.forEach(function(mutation) {
-                    if (mutation.addedNodes.length) {
-                        mutation.addedNodes.forEach(function(node) {
-                            if (node.nodeType === 1) {
-                                // Check if Streamlit shows its reconnecting message
-                                if (node.textContent && node.textContent.includes('Connecting')) {
-                                    showReconnectingOverlay();
-                                }
-                            }
-                        });
-                    }
-                });
-            });
-
-            // Start observing the document only if body exists
-            if (document.body) {
-                observer.observe(document.body, {
-                    childList: true,
-                    subtree: true
-                });
-            }
-        }
-
-        // Initialize when DOM is ready
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', initReconnectionHandlers);
-        } else {
-            initReconnectionHandlers();
-        }
-    })();
-    
-    // Remove any accidentally rendered JavaScript code snippets
-    (function() {
-        function removeRenderedCode() {
-            const walker = document.createTreeWalker(
-                document.body,
-                NodeFilter.SHOW_TEXT,
-                null,
-                false
-            );
-            let node;
-            const nodesToRemove = [];
-            while (node = walker.nextNode()) {
-                if (node.textContent && node.textContent.trim() === '})();') {
-                    const parent = node.parentElement;
-                    if (parent && !parent.closest('script')) {
-                        nodesToRemove.push(node);
-                    }
-                }
-            }
-            nodesToRemove.forEach(n => {
-                if (n.parentElement) {
-                    n.parentElement.removeChild(n);
-                }
-            });
-        }
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', removeRenderedCode);
-        } else {
-            removeRenderedCode();
-        }
-        // Also run after a short delay to catch dynamically added content
-        setTimeout(removeRenderedCode, 100);
-    })();
-    </script>
     """, unsafe_allow_html=True)
+
+    _inject_global_js(_STREAMLIT_THEME_AND_RECONNECT_JS, "careerlens-streamlit-reconnect-js")
 
 
 def get_logo_html():
     """Get logo HTML for hero banner"""
     return _logo_html
+
+
+_STREAMLIT_THEME_AND_RECONNECT_JS = """
+(function() {
+    if (window.__careerlensThemeInit__) {
+        return;
+    }
+    window.__careerlensThemeInit__ = true;
+
+    function updateTheme() {
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const stApp = document.querySelector('.stApp') || document.querySelector('[data-testid="stApp"]');
+
+        if (prefersDark) {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            document.body.setAttribute('data-theme', 'dark');
+            if (stApp) {
+                stApp.setAttribute('data-theme', 'dark');
+            }
+        } else {
+            document.documentElement.removeAttribute('data-theme');
+            document.body.removeAttribute('data-theme');
+            if (stApp) {
+                stApp.removeAttribute('data-theme');
+            }
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', updateTheme);
+    } else {
+        updateTheme();
+    }
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    if (mediaQuery.addEventListener) {
+        mediaQuery.addEventListener('change', updateTheme);
+    } else if (mediaQuery.addListener) {
+        mediaQuery.addListener(updateTheme);
+    }
+})();
+
+(function() {
+    if (window.__careerlensReconnectInit__) {
+        return;
+    }
+    window.__careerlensReconnectInit__ = true;
+
+    let isReconnecting = false;
+
+    function getOverlay() {
+        return document.getElementById('ws-reconnecting-overlay');
+    }
+
+    function showReconnectingOverlay() {
+        const overlay = getOverlay();
+        if (overlay && !isReconnecting) {
+            isReconnecting = true;
+            overlay.classList.add('active');
+        }
+    }
+
+    function hideReconnectingOverlay() {
+        const overlay = getOverlay();
+        if (overlay) {
+            isReconnecting = false;
+            overlay.classList.remove('active');
+        }
+    }
+
+    function initReconnectionHandlers() {
+        window.addEventListener('offline', function() {
+            showReconnectingOverlay();
+        });
+
+        window.addEventListener('online', function() {
+            setTimeout(function() {
+                hideReconnectingOverlay();
+            }, 1000);
+        });
+
+        const observer = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+                if (mutation.addedNodes.length) {
+                    mutation.addedNodes.forEach(function(node) {
+                        if (node.nodeType === 1 && node.textContent && node.textContent.includes('Connecting')) {
+                            showReconnectingOverlay();
+                        }
+                    });
+                }
+            });
+        });
+
+        if (document.body) {
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initReconnectionHandlers);
+    } else {
+        initReconnectionHandlers();
+    }
+})();
+"""
