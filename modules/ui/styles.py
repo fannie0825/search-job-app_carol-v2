@@ -315,10 +315,15 @@ def render_styles():
     })();
     
     (function() {
-        const overlay = document.getElementById('ws-reconnecting-overlay');
         let isReconnecting = false;
 
+        // Helper function to get overlay element (re-query each time to handle Streamlit re-renders)
+        function getOverlay() {
+            return document.getElementById('ws-reconnecting-overlay');
+        }
+
         function showReconnectingOverlay() {
+            const overlay = getOverlay();
             if (overlay && !isReconnecting) {
                 isReconnecting = true;
                 overlay.classList.add('active');
@@ -326,45 +331,58 @@ def render_styles():
         }
 
         function hideReconnectingOverlay() {
+            const overlay = getOverlay();
             if (overlay) {
                 isReconnecting = false;
                 overlay.classList.remove('active');
             }
         }
 
-        // Show overlay when offline
-        window.addEventListener('offline', function() {
-            showReconnectingOverlay();
-        });
-
-        // Hide overlay when back online (let Streamlit handle reconnection)
-        window.addEventListener('online', function() {
-            setTimeout(function() {
-                hideReconnectingOverlay();
-            }, 1000);
-        });
-
-        // Monitor Streamlit's connection state
-        const observer = new MutationObserver(function(mutations) {
-            mutations.forEach(function(mutation) {
-                if (mutation.addedNodes.length) {
-                    mutation.addedNodes.forEach(function(node) {
-                        if (node.nodeType === 1) {
-                            // Check if Streamlit shows its reconnecting message
-                            if (node.textContent && node.textContent.includes('Connecting')) {
-                                showReconnectingOverlay();
-                            }
-                        }
-                    });
-                }
+        // Wait for DOM to be ready before setting up listeners
+        function initReconnectionHandlers() {
+            // Show overlay when offline
+            window.addEventListener('offline', function() {
+                showReconnectingOverlay();
             });
-        });
 
-        // Start observing the document
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
+            // Hide overlay when back online (let Streamlit handle reconnection)
+            window.addEventListener('online', function() {
+                setTimeout(function() {
+                    hideReconnectingOverlay();
+                }, 1000);
+            });
+
+            // Monitor Streamlit's connection state
+            const observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(mutation) {
+                    if (mutation.addedNodes.length) {
+                        mutation.addedNodes.forEach(function(node) {
+                            if (node.nodeType === 1) {
+                                // Check if Streamlit shows its reconnecting message
+                                if (node.textContent && node.textContent.includes('Connecting')) {
+                                    showReconnectingOverlay();
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+
+            // Start observing the document only if body exists
+            if (document.body) {
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+            }
+        }
+
+        // Initialize when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initReconnectionHandlers);
+        } else {
+            initReconnectionHandlers();
+        }
     })();
     </script>
     """, unsafe_allow_html=True)
