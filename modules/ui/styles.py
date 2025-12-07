@@ -107,10 +107,14 @@ def render_styles():
             overflow: hidden;
             margin-bottom: 30px;
             box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            font-size: 0;
+        }}
+        .hero-container > * {{
+            font-size: 16px;
         }}
         .hero-content {{
             position: relative;
-            z-index: 2;
+            z-index: 10;
         }}
         .hero-title {{
             font-size: 32px;
@@ -131,7 +135,7 @@ def render_styles():
             opacity: 0.15;
             transform: rotate(-15deg);
             pointer-events: none;
-            z-index: 1;
+            z-index: 5;
         }}
         
         .dashboard-metric-card {{
