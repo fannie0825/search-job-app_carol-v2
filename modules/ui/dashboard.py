@@ -1,4 +1,6 @@
 """Dashboard display components"""
+from typing import Optional
+
 import streamlit as st
 import pandas as pd
 import gc
@@ -6,6 +8,514 @@ from modules.analysis import calculate_salary_band, filter_jobs_by_domains, filt
 from modules.semantic_search import SemanticJobSearch, fetch_jobs_with_cache, generate_and_store_resume_embedding
 from modules.utils import get_embedding_generator, get_job_scraper, get_text_generator
 from modules.utils.config import _determine_index_limit
+
+# ---------------------------------------------------------------------------
+# Design system helpers for the refreshed CareerLens dashboard experience
+# ---------------------------------------------------------------------------
+
+_DASHBOARD_STYLE_KEY = "_careerlens_dashboard_v2_styles"
+
+_ICON_PATHS = {
+    "eye": """
+        <path d="M1 12s4-8 11-8 11 8-4 8-11 8-11-8-11-8Z"></path>
+        <circle cx="12" cy="12" r="3"></circle>
+    """,
+    "layout-grid": """
+        <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+        <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+        <rect x="14" y="14" width="7" height="7" rx="1"></rect>
+        <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+    """,
+    "file-text": """
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path>
+        <path d="M14 2v6h6"></path>
+        <path d="M16 13H8"></path>
+        <path d="M16 17H8"></path>
+    """,
+    "target": """
+        <circle cx="12" cy="12" r="10"></circle>
+        <circle cx="12" cy="12" r="6"></circle>
+        <circle cx="12" cy="12" r="2"></circle>
+    """,
+    "settings": """
+        <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"></path>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V11a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"></path>
+    """,
+}
+
+
+def _icon_svg(name: str, *, size: int = 20, stroke: Optional[str] = None, opacity: float = 1.0) -> str:
+    """Return an inline SVG icon that matches the requested brand specs."""
+    path = _ICON_PATHS.get(name, "")
+    stroke_color = stroke or "var(--icon-default)"
+    return (
+        f'<svg aria-hidden="true" width="{size}" height="{size}" viewBox="0 0 24 24" '
+        f'fill="none" stroke="{stroke_color}" stroke-width="1.75" stroke-linecap="round" '
+        f'stroke-linejoin="round" style="opacity:{opacity}; flex-shrink:0;">{path}</svg>'
+    )
+
+
+def _inject_dashboard_styles() -> None:
+    """Inject the CareerLens v2 dashboard design tokens + layout styles once."""
+    if st.session_state.get(_DASHBOARD_STYLE_KEY):
+        return
+
+    st.markdown(
+        """
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+            :root {
+                --color-brand: #2CC3F6;
+                --color-brand-hover: #22ACE0;
+                --color-secondary: #7B8AA0;
+                --color-bg-app: #0D1B2A;
+                --color-bg-hero-left: #0D1B2A;
+                --color-bg-hero-right: #162A3A;
+                --color-bg-sidebar: #0A1725;
+                --color-bg-card: #F5F7FB;
+                --color-bg-white: #FFFFFF;
+                --color-border-card: #E3E8F2;
+                --color-line-muted: #D8DEE9;
+                --color-text-strong: #1B2A41;
+                --color-text-body: #2A3B52;
+                --color-text-muted: #7B8AA0;
+                --color-text-inverse: #FFFFFF;
+                --color-positive: #2CC3F6;
+                --color-warning: #F85F73;
+                --color-success: #3CCB7C;
+                --color-info: #5C7CFA;
+                --radius-card: 12px;
+                --radius-input: 8px;
+                --radius-badge: 6px;
+                --shadow-card: 0 4px 12px rgba(10, 24, 38, 0.15);
+                --shadow-hover: 0 6px 18px rgba(10, 24, 38, 0.20);
+                --space-xxs: 4px;
+                --space-xs: 8px;
+                --space-sm: 12px;
+                --space-md: 16px;
+                --space-lg: 24px;
+                --space-xl: 32px;
+                --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+                --fs-hero: 28px; --lh-hero: 36px; --fw-hero: 700;
+                --fs-section: 20px; --lh-section: 28px; --fw-section: 600;
+                --fs-body: 14px; --lh-body: 22px;
+                --fs-label: 12px; --lh-label: 18px; --ls-label: 0.02em;
+                --fs-value: 24px; --lh-value: 32px; --fw-value: 700;
+                --icon-default: #7B8AA0;
+                --icon-active: #2CC3F6;
+            }
+
+            body,
+            .stApp {
+                font-family: var(--font-sans);
+                background-color: var(--color-bg-app);
+                color: var(--color-text-body);
+            }
+
+            .stApp {
+                padding: 0;
+            }
+
+            .cl-dashboard-wrapper {
+                width: 100%;
+                padding: var(--space-xl) 0;
+                background: linear-gradient(90deg, var(--color-bg-hero-left) 0%, var(--color-bg-hero-left) 45%, var(--color-bg-hero-right) 100%);
+            }
+
+            .cl-app-shell {
+                margin: 0 auto;
+                max-width: 1400px;
+                display: flex;
+                gap: var(--space-xl);
+                padding: 0 var(--space-lg);
+            }
+
+            .cl-sidebar {
+                width: 240px;
+                background: var(--color-bg-sidebar);
+                border-radius: var(--radius-card);
+                padding: var(--space-lg) calc(var(--space-md));
+                flex-shrink: 0;
+                display: flex;
+                flex-direction: column;
+                gap: var(--space-lg);
+                min-height: 100%;
+                box-shadow: var(--shadow-card);
+            }
+
+            .cl-brand-block {
+                display: flex;
+                align-items: center;
+                gap: var(--space-sm);
+                color: var(--color-brand);
+                font-weight: 700;
+                font-size: 18px;
+                letter-spacing: 0.01em;
+            }
+
+            .cl-nav-section {
+                display: flex;
+                flex-direction: column;
+                gap: var(--space-xs);
+            }
+
+            .cl-nav-item {
+                width: 100%;
+                display: flex;
+                align-items: center;
+                gap: var(--space-sm);
+                padding: var(--space-sm) calc(var(--space-sm)) var(--space-sm) calc(var(--space-md));
+                color: #E6EDF5;
+                background: transparent;
+                border: none;
+                border-left: 4px solid transparent;
+                border-radius: 8px;
+                font-size: 14px;
+                line-height: 20px;
+                text-align: left;
+                transition: background 150ms ease-out, color 150ms ease-out, border-color 150ms ease-out, transform 150ms ease-out;
+                cursor: pointer;
+            }
+
+            .cl-nav-item svg {
+                stroke: var(--icon-default);
+            }
+
+            .cl-nav-item:hover {
+                background: rgba(255, 255, 255, 0.06);
+                color: var(--color-text-inverse);
+            }
+
+            .cl-nav-item:focus-visible {
+                outline: 2px solid var(--color-brand);
+                outline-offset: 2px;
+            }
+
+            .cl-nav-item.is-active {
+                background: rgba(44, 195, 246, 0.08);
+                border-left-color: var(--color-brand);
+                color: var(--color-text-inverse);
+            }
+
+            .cl-nav-item.is-active svg {
+                stroke: var(--icon-active);
+            }
+
+            .cl-main-area {
+                flex: 1;
+                max-width: 1200px;
+                width: 100%;
+                margin: 0 auto;
+                display: flex;
+                flex-direction: column;
+                gap: var(--space-xl);
+                padding-bottom: var(--space-xl);
+            }
+
+            .cl-hero {
+                position: relative;
+                background: linear-gradient(90deg, var(--color-bg-hero-left), var(--color-bg-hero-right));
+                border-radius: var(--radius-card);
+                padding: var(--space-lg) var(--space-xl);
+                min-height: 140px;
+                overflow: hidden;
+                color: var(--color-text-inverse);
+                box-shadow: var(--shadow-card);
+            }
+
+            .cl-hero-brand {
+                display: inline-flex;
+                align-items: center;
+                gap: var(--space-xs);
+                color: var(--color-brand);
+                font-size: 13px;
+                letter-spacing: 0.04em;
+                text-transform: uppercase;
+            }
+
+            .cl-hero-title {
+                font-size: var(--fs-hero);
+                line-height: var(--lh-hero);
+                font-weight: var(--fw-hero);
+                margin: var(--space-xs) 0 var(--space-xxs);
+                color: var(--color-text-inverse);
+            }
+
+            .cl-hero-subtitle {
+                font-size: var(--fs-body);
+                line-height: var(--lh-body);
+                color: var(--color-text-muted);
+                max-width: 460px;
+            }
+
+            .cl-hero-watermark {
+                position: absolute;
+                right: var(--space-md);
+                bottom: -10px;
+                opacity: 0.1;
+            }
+
+            .cl-section {
+                background: var(--color-bg-card);
+                border-radius: var(--radius-card);
+                padding: var(--space-lg);
+                box-shadow: var(--shadow-card);
+                border: 1px solid var(--color-border-card);
+            }
+
+            .cl-section h2 {
+                font-size: var(--fs-section);
+                line-height: var(--lh-section);
+                font-weight: var(--fw-section);
+                color: var(--color-text-strong);
+                margin: 0 0 var(--space-md);
+            }
+
+            .cl-metric-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: var(--space-lg);
+            }
+
+            .cl-metric-card {
+                background: var(--color-bg-white);
+                border: 1px solid var(--color-border-card);
+                border-radius: var(--radius-card);
+                padding: var(--space-md);
+                box-shadow: var(--shadow-card);
+                transition: transform 150ms ease-out, box-shadow 150ms ease-out;
+            }
+
+            .cl-metric-card:hover {
+                box-shadow: var(--shadow-hover);
+                transform: translateY(-1px);
+            }
+
+            .cl-metric-card:focus-visible {
+                outline: 2px solid var(--color-brand);
+                outline-offset: 2px;
+            }
+
+            .cl-metric-label {
+                font-size: var(--fs-label);
+                line-height: var(--lh-label);
+                color: var(--color-text-muted);
+                text-transform: uppercase;
+                letter-spacing: var(--ls-label);
+                margin-bottom: var(--space-xs);
+            }
+
+            .cl-metric-value {
+                font-size: var(--fs-value);
+                line-height: var(--lh-value);
+                font-weight: var(--fw-value);
+                color: var(--color-text-strong);
+                text-align: right;
+            }
+
+            .cl-metric-card.is-positive .cl-metric-value {
+                color: var(--color-positive);
+            }
+
+            .cl-metric-card.is-warning .cl-metric-value {
+                color: var(--color-warning);
+            }
+
+            .cl-chart-panel {
+                margin-top: var(--space-lg);
+                background: var(--color-bg-white);
+                border: 1px solid var(--color-border-card);
+                border-radius: var(--radius-card);
+                padding: var(--space-lg);
+                box-shadow: var(--shadow-card);
+                min-height: 360px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .cl-chart-panel .cl-chart-placeholder {
+                width: 100%;
+                height: 100%;
+                border: 2px dashed var(--color-line-muted);
+                border-radius: calc(var(--radius-card) - var(--space-sm));
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: var(--color-text-muted);
+                font-weight: 500;
+                text-align: center;
+            }
+
+            .cl-chart-panel .cl-chart-placeholder:focus-visible {
+                outline: 2px solid var(--color-brand);
+                outline-offset: 6px;
+            }
+
+            @media (max-width: 1199px) {
+                .cl-app-shell {
+                    padding: 0 var(--space-md);
+                    gap: var(--space-lg);
+                }
+
+                .cl-sidebar {
+                    width: 220px;
+                }
+
+                .cl-metric-grid {
+                    gap: var(--space-md);
+                    grid-template-columns: repeat(2, minmax(200px, 1fr));
+                }
+            }
+
+            @media (max-width: 767px) {
+                .cl-app-shell {
+                    padding: 0 var(--space-md);
+                }
+
+                .cl-sidebar {
+                    width: 64px;
+                    padding: var(--space-md) var(--space-sm);
+                    align-items: center;
+                    gap: var(--space-md);
+                }
+
+                .cl-brand-block {
+                    display: none;
+                }
+
+                .cl-nav-section {
+                    gap: var(--space-sm);
+                }
+
+                .cl-nav-item {
+                    border-left: none;
+                    border-radius: var(--radius-card);
+                    padding: var(--space-md);
+                    justify-content: center;
+                }
+
+                .cl-nav-label {
+                    display: none;
+                }
+
+                .cl-hero {
+                    min-height: 110px;
+                    padding: var(--space-lg);
+                }
+
+                .cl-hero-title {
+                    font-size: 24px;
+                    line-height: 32px;
+                }
+
+                .cl-hero-subtitle {
+                    font-size: 13px;
+                }
+
+                .cl-metric-grid {
+                    grid-template-columns: 1fr;
+                    gap: var(--space-sm);
+                }
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.session_state[_DASHBOARD_STYLE_KEY] = True
+
+
+def _render_sidebar_nav(active_item: str) -> str:
+    """Build the navigation rail markup."""
+    nav_items = [
+        {"label": "Dashboard", "icon": "layout-grid"},
+        {"label": "Resume Analysis", "icon": "file-text"},
+        {"label": "Market Match", "icon": "target"},
+        {"label": "Settings", "icon": "settings"},
+    ]
+
+    buttons = []
+    for item in nav_items:
+        is_active = item["label"].lower() == active_item.lower()
+        state_class = " is-active" if is_active else ""
+        aria_current = "page" if is_active else "false"
+        icon_color = "var(--cl-icon-active)" if is_active else None
+        icon_stroke = icon_color or "var(--icon-default)"
+        buttons.append(
+            f"""
+            <button type="button" class="cl-nav-item{state_class}" aria-label="{item['label']}"
+                    aria-current="{aria_current}" title="{item['label']}">
+                {_icon_svg(item['icon'], stroke=icon_stroke)}
+                <span class="cl-nav-label">{item['label']}</span>
+            </button>
+            """
+        )
+
+    return f"""
+    <aside class="cl-sidebar" role="navigation" aria-label="Primary navigation">
+        <div class="cl-brand-block">
+            {_icon_svg("eye", stroke="var(--color-brand)")}
+            <span>CareerLens</span>
+        </div>
+        <div class="cl-nav-section">
+            {''.join(buttons)}
+        </div>
+    </aside>
+    """
+
+
+def _render_hero_header(user_name: str, subtitle: str) -> str:
+    """Return the hero header layout."""
+    greeting = f"Welcome back, {user_name or 'Alex'}."
+    return f"""
+    <header class="cl-hero" role="banner">
+        <div class="cl-hero-content">
+            <div class="cl-hero-brand">
+                {_icon_svg("eye", stroke="var(--color-brand)", size=18)}
+                <span>CareerLens</span>
+            </div>
+            <h1 class="cl-hero-title">{greeting}</h1>
+            <p class="cl-hero-subtitle">{subtitle}</p>
+        </div>
+        <div class="cl-hero-watermark" aria-hidden="true">
+            {_icon_svg("eye", stroke="var(--color-brand)", size=220, opacity=0.1)}
+        </div>
+    </header>
+    """
+
+
+def _render_metric_card(label: str, value: str, variant: str = "default") -> str:
+    """Return HTML for a metric card with variant coloring."""
+    variant_class = "" if variant == "default" else f" is-{variant}"
+    return f"""
+    <article class="cl-metric-card{variant_class}" tabindex="0" aria-label="{label} {value}">
+        <p class="cl-metric-label">{label}</p>
+        <p class="cl-metric-value">{value}</p>
+    </article>
+    """
+
+
+def _render_chart_panel() -> str:
+    """Placeholder chart area with dashed boundary."""
+    return """
+    <div class="cl-chart-panel">
+        <div class="cl-chart-placeholder" tabindex="0">
+            <span>Chart Area / Data Visualization</span>
+        </div>
+    </div>
+    """
+
+
+def _render_section(title: str, content_html: str) -> str:
+    """Generic section wrapper."""
+    return f"""
+    <section class="cl-section" aria-label="{title}">
+        <h2>{title}</h2>
+        {content_html}
+    </section>
+    """
 
 
 def display_skill_matching_matrix(user_profile):
@@ -133,40 +643,20 @@ def display_market_positioning_profile(matched_jobs, user_profile):
     """Display Dashboard with 3 key metric cards: Match Score, Est. Salary, Skill Gaps"""
     if not matched_jobs:
         return
-    
+
+    _inject_dashboard_styles()
+
     avg_match_score = sum(r.get('combined_match_score', 0) for r in matched_jobs) / len(matched_jobs)
     match_score_pct = int(avg_match_score * 100)
-    
-    if match_score_pct >= 80:
-        match_delta = "Excellent fit"
-        match_delta_color = "normal"
-    elif match_score_pct >= 60:
-        match_delta = "Good fit"
-        match_delta_color = "off"
-    else:
-        match_delta = "Room to improve"
-        match_delta_color = "inverse"
-    
+
     salary_min, salary_max = calculate_salary_band(matched_jobs)
     avg_salary = (salary_min + salary_max) // 2
-    
-    user_salary_expectation = st.session_state.get('salary_expectation', 0)
-    if user_salary_expectation > 0:
-        salary_delta_pct = ((avg_salary - user_salary_expectation) / user_salary_expectation * 100) if user_salary_expectation > 0 else 0
-        if salary_delta_pct > 0:
-            salary_delta = f"+{salary_delta_pct:.0f}% vs target"
-        elif salary_delta_pct < 0:
-            salary_delta = f"{salary_delta_pct:.0f}% vs target"
-        else:
-            salary_delta = "Matches target"
-    else:
-        salary_delta = "Market rate"
-    
+
     user_skills = user_profile.get('skills', '')
     all_job_skills = []
     for result in matched_jobs:
         all_job_skills.extend(result['job'].get('skills', []))
-    
+
     user_skills_list = [s.lower().strip() for s in str(user_skills).split(',') if s.strip()]
     skill_gaps = set()
     for job_skill in all_job_skills:
@@ -174,49 +664,35 @@ def display_market_positioning_profile(matched_jobs, user_profile):
             job_skill_lower = job_skill.lower().strip()
             if job_skill_lower and not any(us in job_skill_lower or job_skill_lower in us for us in user_skills_list):
                 skill_gaps.add(job_skill_lower)
-    
+
     num_skill_gaps = len(skill_gaps)
-    
-    if num_skill_gaps <= 3:
-        gap_delta = "Well positioned"
-        gap_delta_color = "normal"
-    elif num_skill_gaps <= 7:
-        gap_delta = "Some upskilling needed"
-        gap_delta_color = "off"
-    else:
-        gap_delta = "Focus on learning"
-        gap_delta_color = "inverse"
-    
-    st.markdown("### 📊 Your Dashboard")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown(f"""
-        <div class="dashboard-metric-card">
-            <div class="dashboard-metric-label">Match Score</div>
-            <div class="dashboard-metric-value">{match_score_pct}%</div>
+
+    metric_cards = [
+        _render_metric_card("MATCH SCORE", f"{match_score_pct}%", variant="positive"),
+        _render_metric_card("EST SALARY", f"HK${max(avg_salary // 1000, 0)}k"),
+        _render_metric_card("SKILL GAPS", str(num_skill_gaps), variant="warning"),
+    ]
+
+    metrics_html = f'<div class="cl-metric-grid">{"".join(metric_cards)}</div>'
+    chart_html = _render_chart_panel()
+    section_html = _render_section("Recent Activity", metrics_html + chart_html)
+
+    hero_name = user_profile.get('name') or user_profile.get('first_name') or "Alex"
+    hero_subtitle = "Your market value has increased by 5% since last month."
+
+    layout_html = f"""
+    <div class="cl-dashboard-wrapper">
+        <div class="cl-app-shell">
+            {_render_sidebar_nav("Dashboard")}
+            <main class="cl-main-area" role="main" aria-live="polite">
+                {_render_hero_header(hero_name, hero_subtitle)}
+                {section_html}
+            </main>
         </div>
-        """, unsafe_allow_html=True)
-        st.caption(f"📈 {match_delta}")
-    
-    with col2:
-        st.markdown(f"""
-        <div class="dashboard-metric-card">
-            <div class="dashboard-metric-label">Est. Salary</div>
-            <div class="dashboard-metric-value">HKD {avg_salary // 1000}k</div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.caption(f"💰 {salary_delta}")
-    
-    with col3:
-        st.markdown(f"""
-        <div class="dashboard-metric-card">
-            <div class="dashboard-metric-label">Skill Gaps</div>
-            <div class="dashboard-metric-value">{num_skill_gaps}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.caption(f"🎯 {gap_delta}")
+    </div>
+    """
+
+    st.markdown(layout_html, unsafe_allow_html=True)
 
 
 def display_refine_results_section(matched_jobs, user_profile):
