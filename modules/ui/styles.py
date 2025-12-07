@@ -316,59 +316,17 @@ def render_styles():
     
     (function() {
         let isReconnecting = false;
-        let reconnectAttempts = 0;
-        const maxReconnectAttempts = 5; // Set a limit
-        let reconnectTimer = null;
 
         // Helper function to get overlay element (re-query each time to handle Streamlit re-renders)
         function getOverlay() {
             return document.getElementById('ws-reconnecting-overlay');
         }
 
-        function updateOverlayMessage() {
-            const overlay = getOverlay();
-            if (!overlay) return;
-            
-            const textElement = overlay.querySelector('.ws-reconnecting-text');
-            const subtextElement = overlay.querySelector('.ws-reconnecting-subtext');
-            
-            if (reconnectAttempts >= maxReconnectAttempts) {
-                if (textElement) {
-                    textElement.textContent = 'Connection Failed';
-                }
-                if (subtextElement) {
-                    subtextElement.textContent = 'Unable to reconnect. Please refresh the page.';
-                }
-            } else if (reconnectAttempts > 1) {
-                if (textElement) {
-                    textElement.textContent = 'Reconnecting... (Attempt ' + reconnectAttempts + '/' + maxReconnectAttempts + ')';
-                }
-                if (subtextElement) {
-                    subtextElement.textContent = 'Please wait while we restore your connection';
-                }
-            } else {
-                if (textElement) {
-                    textElement.textContent = 'Reconnecting...';
-                }
-                if (subtextElement) {
-                    subtextElement.textContent = 'Please wait while we restore your connection';
-                }
-            }
-        }
-
         function showReconnectingOverlay() {
             const overlay = getOverlay();
             if (overlay && !isReconnecting) {
                 isReconnecting = true;
-                reconnectAttempts++;
-                updateOverlayMessage();
                 overlay.classList.add('active');
-                
-                // Clear any existing timer
-                if (reconnectTimer) {
-                    clearTimeout(reconnectTimer);
-                    reconnectTimer = null;
-                }
             }
         }
 
@@ -377,15 +335,6 @@ def render_styles():
             if (overlay) {
                 isReconnecting = false;
                 overlay.classList.remove('active');
-                
-                // Reset attempt counter on successful reconnection
-                reconnectAttempts = 0;
-                
-                // Clear any existing timer
-                if (reconnectTimer) {
-                    clearTimeout(reconnectTimer);
-                    reconnectTimer = null;
-                }
             }
         }
 
