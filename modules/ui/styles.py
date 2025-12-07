@@ -381,36 +381,6 @@ def render_styles():
             }, 1000);
         });
 
-        const OriginalWebSocket = window.WebSocket;
-        window.WebSocket = function(url, protocols) {
-            const ws = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
-
-            if (url && (url.includes('_stcore/stream') || url.includes('logstream'))) {
-                ws.addEventListener('close', function(event) {
-                    if (event.code !== 1000 && event.code !== 1001) {
-                        showReconnectingOverlay();
-                        attemptReconnect();
-                    }
-                });
-
-                ws.addEventListener('error', function(event) {
-                    showReconnectingOverlay();
-                    attemptReconnect();
-                });
-
-                ws.addEventListener('open', function() {
-                    hideReconnectingOverlay();
-                });
-            }
-
-            return ws;
-        };
-        window.WebSocket.prototype = OriginalWebSocket.prototype;
-        window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
-        window.WebSocket.OPEN = OriginalWebSocket.OPEN;
-        window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
-        window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
-
         window.addEventListener('beforeunload', function() {
             if (reconnectTimer) {
                 clearTimeout(reconnectTimer);

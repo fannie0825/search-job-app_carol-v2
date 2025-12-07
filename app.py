@@ -1479,7 +1479,6 @@ st.markdown("""
     let connectionCheckTimer = null;
     let lastErrorTime = 0;
     const ERROR_DEBOUNCE_MS = 2000;  // Debounce rapid error events
-    let activeConnections = 0;  // Track active WebSocket connections
     
     function showReconnectingOverlay() {
         // Debounce rapid reconnection triggers
@@ -1576,65 +1575,10 @@ st.markdown("""
         console.log('CareerLens: Network connection restored');
         // Wait a moment for connection to stabilize
         setTimeout(function() {
-            if (activeConnections > 0) {
-                // Already have active connections, just hide overlay
-                hideReconnectingOverlay();
-            } else {
-                // No active connections, need to reload
-                hideReconnectingOverlay();
-                window.location.reload();
-            }
+            hideReconnectingOverlay();
+            window.location.reload();
         }, 2000);
     });
-    
-    // Monitor WebSocket connections (Streamlit uses WebSockets)
-    // Override WebSocket to add connection monitoring
-    const OriginalWebSocket = window.WebSocket;
-    window.WebSocket = function(url, protocols) {
-        const ws = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
-        
-        // Only monitor Streamlit WebSocket connections (not third-party)
-        const isStreamlitWs = url && (url.includes('_stcore/stream') || url.includes('logstream'));
-        
-        if (isStreamlitWs) {
-            ws.addEventListener('close', function(event) {
-                activeConnections = Math.max(0, activeConnections - 1);
-                // Only handle unexpected closes (not normal closures)
-                // 1000 = normal, 1001 = going away, 1005 = no status (browser close)
-                if (event.code !== 1000 && event.code !== 1001 && event.code !== 1005) {
-                    console.log('CareerLens: Streamlit WebSocket closed, code:', event.code);
-                    // Only show reconnecting if we have no other active connections
-                    if (activeConnections === 0) {
-                        showReconnectingOverlay();
-                        attemptReconnect();
-                    }
-                }
-            });
-            
-            ws.addEventListener('error', function(event) {
-                console.log('CareerLens: Streamlit WebSocket error');
-                // Only trigger reconnect if this is our last connection
-                if (activeConnections <= 1) {
-                    showReconnectingOverlay();
-                    attemptReconnect();
-                }
-            });
-            
-            ws.addEventListener('open', function() {
-                activeConnections++;
-                console.log('CareerLens: Streamlit WebSocket connected');
-                hideReconnectingOverlay();
-            });
-        }
-        
-        return ws;
-    };
-    // Preserve prototype chain
-    window.WebSocket.prototype = OriginalWebSocket.prototype;
-    window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
-    window.WebSocket.OPEN = OriginalWebSocket.OPEN;
-    window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
-    window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
     
     // Cleanup on page unload
     window.addEventListener('beforeunload', function() {
@@ -1646,7 +1590,7 @@ st.markdown("""
         }
     });
     
-    console.log('CareerLens: WebSocket connection monitor initialized');
+    console.log('CareerLens: Connection monitor initialized');
 })();
 </script>
 """, unsafe_allow_html=True)
