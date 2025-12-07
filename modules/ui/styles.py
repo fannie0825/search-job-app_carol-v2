@@ -320,14 +320,14 @@ def render_styles():
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
         let reconnectTimer = null;
-        
+
         function showReconnectingOverlay() {
             if (overlay && !isReconnecting) {
                 isReconnecting = true;
                 overlay.classList.add('active');
             }
         }
-        
+
         function hideReconnectingOverlay() {
             if (overlay) {
                 isReconnecting = false;
@@ -335,16 +335,16 @@ def render_styles():
                 overlay.classList.remove('active');
             }
         }
-        
+
         function attemptReconnect() {
             if (reconnectAttempts >= maxReconnectAttempts) {
                 window.location.reload();
                 return;
             }
-            
+
             reconnectAttempts++;
             const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 16000);
-            
+
             reconnectTimer = setTimeout(function() {
                 if (navigator.onLine) {
                     try {
@@ -358,7 +358,7 @@ def render_styles():
                     } catch (e) {
                         console.log('CareerLens: Could not trigger Streamlit rerun');
                     }
-                    
+
                     if (reconnectAttempts >= 3) {
                         window.location.reload();
                     } else {
@@ -369,22 +369,22 @@ def render_styles():
                 }
             }, delay);
         }
-        
+
         window.addEventListener('offline', function() {
             showReconnectingOverlay();
         });
-        
+
         window.addEventListener('online', function() {
             setTimeout(function() {
                 hideReconnectingOverlay();
                 window.location.reload();
             }, 1000);
         });
-        
+
         const OriginalWebSocket = window.WebSocket;
         window.WebSocket = function(url, protocols) {
             const ws = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
-            
+
             if (url && (url.includes('_stcore/stream') || url.includes('logstream'))) {
                 ws.addEventListener('close', function(event) {
                     if (event.code !== 1000 && event.code !== 1001) {
@@ -392,17 +392,17 @@ def render_styles():
                         attemptReconnect();
                     }
                 });
-                
+
                 ws.addEventListener('error', function(event) {
                     showReconnectingOverlay();
                     attemptReconnect();
                 });
-                
+
                 ws.addEventListener('open', function() {
                     hideReconnectingOverlay();
                 });
             }
-            
+
             return ws;
         };
         window.WebSocket.prototype = OriginalWebSocket.prototype;
@@ -410,7 +410,7 @@ def render_styles():
         window.WebSocket.OPEN = OriginalWebSocket.OPEN;
         window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
         window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
-        
+
         window.addEventListener('beforeunload', function() {
             if (reconnectTimer) {
                 clearTimeout(reconnectTimer);
