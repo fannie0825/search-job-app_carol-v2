@@ -8,6 +8,7 @@ from modules.analysis import calculate_salary_band, filter_jobs_by_domains, filt
 from modules.semantic_search import SemanticJobSearch, fetch_jobs_with_cache, generate_and_store_resume_embedding
 from modules.utils import get_embedding_generator, get_job_scraper, get_text_generator
 from modules.utils.config import _determine_index_limit
+import streamlit.components.v1 as components
 
 # ---------------------------------------------------------------------------
 # Design system helpers for the refreshed CareerLens dashboard experience
@@ -692,7 +693,7 @@ def display_market_positioning_profile(matched_jobs, user_profile):
     </div>
     """
 
-    st.markdown(layout_html, unsafe_allow_html=True)
+    components.html(layout_html, height=860, scrolling=False)
 
 
 def display_refine_results_section(matched_jobs, user_profile):
